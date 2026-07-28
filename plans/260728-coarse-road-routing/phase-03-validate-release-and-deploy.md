@@ -1,7 +1,7 @@
 ---
 phase: 3
 title: Validate release and deploy
-status: in-progress
+status: completed
 priority: P1
 dependencies:
   - 2
@@ -49,10 +49,10 @@ document the approximation contract, deploy the Worker, and prove the live API.
 
 - [x] All Python and TypeScript tests, typecheck, and build pass.
 - [x] Release verifier covers both code and asset outputs.
-- [ ] No unsupported bindings or raw/private files are deployed.
-- [ ] Live route response returns valid Polyline6 and matching versions.
-- [ ] Live fallback response is transparent and old distance behavior is intact.
-- [ ] Production URL and smoke evidence are recorded for handoff.
+- [x] No unsupported bindings or raw/private files are deployed.
+- [x] Live route response returns valid Polyline6 and matching versions.
+- [x] Live fallback response is transparent and old distance behavior is intact.
+- [x] Production URL and smoke evidence are recorded for handoff.
 
 ## Risk Assessment
 

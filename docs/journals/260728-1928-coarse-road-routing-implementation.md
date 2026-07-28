@@ -3,7 +3,7 @@
 **Date**: 2026-07-28 19:28
 **Severity**: High
 **Component**: Coarse road routing pipeline and runtime lookup
-**Status**: Implementation complete, deploy blocked
+**Status**: Deployed and live-verified
 
 ## What Happened
 
@@ -50,9 +50,17 @@ The root problem was overconfidence in cached state. We treated routing artifact
 - Runtime fallback logic must be capped from day one, not patched in after the fact.
 - If a cache can cross request boundaries, assume it will eventually lie.
 
+## Production Outcome
+
+- Deployed to `https://vn-commune-distance-service.hoa.workers.dev`.
+- Cloudflare version: `c50bcf38-2e86-45a1-bffa-2b53096f4a2b`.
+- Live smoke passed for dataset/graph health, metadata, legacy distance,
+  coarse graph routing, no-connector fallback, and identity routing.
+- Two requests during immediate propagation briefly reached the previous
+  version; sequential retries returned the expected `200` responses.
+
 ## Next Steps
 
-- Owner: implementation lead. Keep the static graph pipeline and artifact ABI pinned.
-- Owner: runtime lead. Monitor the cold-load path and fallback caps after deployment.
-- Owner: release. The deploy attempt is blocked by the approval gate and needs explicit user reconfirmation before we try again.
-- Timeline: no further deploy action until reconfirmed; validation remains green at `26 + 83` tests.
+- Keep the static graph pipeline and artifact ABI pinned.
+- Monitor real usage before considering finer roads, turn restrictions,
+  authentication, or rate limiting.

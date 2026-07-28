@@ -3,7 +3,7 @@ title: Static Coarse Road Routing
 description: >-
   Add a free, static, approximate car-route API backed by a simplified
   OpenStreetMap major-road graph and a transparent straight-line fallback.
-status: in-progress
+status: completed
 priority: P1
 branch: main
 tags:
@@ -54,7 +54,7 @@ exhausted.
 |-------|------|--------|
 | 1 | [Build coarse road graph](./phase-01-build-coarse-road-graph.md) | Completed |
 | 2 | [Implement route runtime and API](./phase-02-implement-route-runtime-and-api.md) | Completed |
-| 3 | [Validate release and deploy](./phase-03-validate-release-and-deploy.md) | In Progress |
+| 3 | [Validate release and deploy](./phase-03-validate-release-and-deploy.md) | Completed |
 
 ## Dependencies
 
