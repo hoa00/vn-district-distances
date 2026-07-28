@@ -137,6 +137,94 @@ function errorBody(code: ErrorCode, message: string): ErrorResponse {
   return { error: { code, message } };
 }
 
+/**
+ * Nội dung robots.txt: cấm mọi user-agent crawl toàn bộ site,
+ * kèm danh sách bot AI/training phổ biến (belt-and-suspenders).
+ * Lưu ý: đây là tín hiệu lịch sự — bot ác ý có thể bỏ qua.
+ */
+const ROBOTS_TXT_BODY = `# Vietnam Commune Distance Service — internal API
+# Do not crawl, scrape, index, or use for AI/ML training.
+
+User-agent: *
+Disallow: /
+
+# Explicit AI / training / LLM crawlers
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+
+User-agent: OAI-SearchBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: GoogleOther
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: Claude-Web
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: cohere-ai
+Disallow: /
+
+User-agent: Diffbot
+Disallow: /
+
+User-agent: FacebookBot
+Disallow: /
+
+User-agent: meta-externalagent
+Disallow: /
+
+User-agent: Applebot-Extended
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: AI2Bot
+Disallow: /
+
+User-agent: ImagesiftBot
+Disallow: /
+
+User-agent: Omgilibot
+Disallow: /
+
+User-agent: Omgili
+Disallow: /
+
+User-agent: Timpibot
+Disallow: /
+
+User-agent: Webzio-Extended
+Disallow: /
+
+User-agent: PetalBot
+Disallow: /
+
+User-agent: YouBot
+Disallow: /
+`;
+
 export interface AppOverrides {
   readonly distanceService?: Pick<DistanceService, "calculate">;
   readonly roadRouteService?: Pick<RouteService, "calculate" | "calculatePoints">;
@@ -171,6 +259,16 @@ export function createApp(
     await next();
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
+    // Báo hiệu crawler/index không được index hay archive mọi response.
+    c.header("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet, noimageindex");
+  });
+
+  // robots.txt: chặn crawl toàn site (bot search + bot AI tuân thủ chuẩn).
+  app.get("/robots.txt", (c) => {
+    return c.text(ROBOTS_TXT_BODY, 200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+    });
   });
 
   app.openapi(distanceRoute, (c) => {

@@ -13,6 +13,9 @@ The service exposes a small read-only API for distance lookup and operational ch
 - `/meta/road-graph`: return the road graph manifest.
 - `/openapi.json`: return the OpenAPI document.
 - `/scalar`: return the Scalar API reference UI.
+- `/robots.txt`: disallow all crawlers (including common AI/training bots). Advisory only — not a hard block.
+
+All responses also send `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet, noimageindex`.
 
 ## Distance Request
 

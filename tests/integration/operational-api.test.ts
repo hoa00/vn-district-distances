@@ -135,11 +135,34 @@ describe("operational endpoints", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("x-robots-tag")).toBe(
+      "noindex, nofollow, noarchive, nosnippet, noimageindex",
+    );
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "INVALID_REQUEST",
         message: "Route not found.",
       },
     });
+  });
+
+  it("serves robots.txt that disallows all crawlers including AI bots", async () => {
+    const response = await createApp(
+      loadRuntimeDataset(createTestDataset(), { expectedRecordCount: 2 }),
+    ).request("/robots.txt");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/text\/plain/);
+    const body = await response.text();
+    expect(body).toContain("User-agent: *");
+    expect(body).toContain("Disallow: /");
+    expect(body).toContain("User-agent: GPTBot");
+    expect(body).toContain("User-agent: ClaudeBot");
+    expect(body).toContain("User-agent: Google-Extended");
+    expect(body).toContain("User-agent: Bytespider");
+    expect(body).toContain("User-agent: CCBot");
+    expect(response.headers.get("x-robots-tag")).toBe(
+      "noindex, nofollow, noarchive, nosnippet, noimageindex",
+    );
   });
 });
