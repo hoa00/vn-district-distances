@@ -1,4 +1,5 @@
 import { gzipSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -15,11 +16,23 @@ const rootPath = fileURLToPath(root);
 const EXPECTED_RECORD_COUNT = 3_321;
 const MAX_UNPACKED_BYTES = 10 * 1024 * 1024;
 const MAX_GZIP_BYTES = 2.5 * 1024 * 1024;
+const MAX_STATIC_ASSET_BYTES = 25 * 1024 * 1024;
+const MAX_DECODED_GRAPH_BYTES = 64 * 1024 * 1024;
+const SEARCH_NODE_CAP = 10_000;
+const FORBIDDEN_SHIPPED_EXTENSIONS = new Set([".pbf", ".osm", ".pdf", ".env"]);
 
 function invariant(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function hasForbiddenShippedExtension(path) {
+  return FORBIDDEN_SHIPPED_EXTENSIONS.has(extname(path));
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 async function filesUnder(directory) {
@@ -113,14 +126,111 @@ for (const forbiddenBinding of [
     `unexpected Worker binding: ${forbiddenBinding}`,
   );
 }
+invariant(
+  /"binding"\s*:\s*"ASSETS"/.test(wranglerConfig),
+  "the only runtime binding must be the static ASSETS fetcher",
+);
+invariant(
+  /"directory"\s*:\s*"\.\/public"/.test(wranglerConfig),
+  "static assets must be published from ./public",
+);
+
+const roadGraphManifest = JSON.parse(
+  await readFile(fromRoot("src/data/road-graph-manifest.json"), "utf8"),
+);
+invariant(
+  roadGraphManifest.schemaVersion === 1,
+  "unsupported road graph schema",
+);
+invariant(
+  roadGraphManifest.communeDatasetVersion === manifest.version &&
+    roadGraphManifest.communeDatasetSha256 === manifest.runtimeDatasetSha256,
+  "road graph and commune dataset versions do not match",
+);
+invariant(
+  roadGraphManifest.attribution.includes("OpenStreetMap"),
+  "road graph attribution must name OpenStreetMap",
+);
+invariant(
+  roadGraphManifest.licenseUrl.toLowerCase().includes("odbl") &&
+    roadGraphManifest.shareAlikeNotice.includes("ODbL"),
+  "road graph must retain ODbL licensing notices",
+);
+invariant(
+  /^\/road-graph\/[a-f0-9]{64}\.bin$/.test(
+    roadGraphManifest.assetPath,
+  ),
+  "road graph must use a content-addressed asset path",
+);
+
+const roadGraphAsset = await readFile(
+  fromRoot(`public${roadGraphManifest.assetPath}`),
+);
+const roadGraphSha256 = sha256Hex(roadGraphAsset);
+invariant(
+  roadGraphAsset.byteLength === roadGraphManifest.sizeBytes,
+  "road graph asset size does not match its manifest",
+);
+invariant(
+  roadGraphSha256 === roadGraphManifest.assetSha256,
+  "road graph asset checksum does not match its manifest",
+);
+invariant(
+  roadGraphAsset.byteLength < MAX_STATIC_ASSET_BYTES,
+  "road graph exceeds the 25 MiB static asset limit",
+);
+invariant(
+  roadGraphAsset.subarray(0, 4).toString("ascii") === "VNRG",
+  "road graph binary magic is invalid",
+);
+const connectorDirectoryOffset = 32 + (9 - 1) * 16;
+const connectorSectionOffset = roadGraphAsset.readUInt32LE(
+  connectorDirectoryOffset + 4,
+);
+const connectorCount = roadGraphAsset.readUInt32LE(
+  connectorDirectoryOffset + 12,
+);
+const graphCommuneIds = new Set();
+for (let index = 0; index < connectorCount; index += 1) {
+  graphCommuneIds.add(
+    roadGraphAsset
+      .readUInt32LE(connectorSectionOffset + index * 4)
+      .toString()
+      .padStart(5, "0"),
+  );
+}
+invariant(
+  graphCommuneIds.size === records.length &&
+    records.every((record) => graphCommuneIds.has(record.id)),
+  "road graph connector IDs do not exactly match the runtime dataset",
+);
+
+const estimatedDecodedGraphBytes =
+  roadGraphAsset.byteLength +
+  roadGraphManifest.nodeCount * 24 +
+  connectorCount * 256 +
+  SEARCH_NODE_CAP * 64 +
+  1024 * 1024;
+invariant(
+  estimatedDecodedGraphBytes <= MAX_DECODED_GRAPH_BYTES,
+  "road graph exceeds the decoded-memory budget",
+);
+
+const publicFiles = await filesUnder(fileURLToPath(fromRoot("public")));
+invariant(
+  publicFiles.every((path) => !hasForbiddenShippedExtension(path)),
+  "raw data or secrets found in public assets",
+);
+invariant(
+  publicFiles.filter((path) => extname(path) === ".bin").length === 1,
+  "public assets must contain exactly one road graph binary",
+);
 
 const distPath = fileURLToPath(fromRoot("dist"));
 const distFiles = await filesUnder(distPath);
 invariant(distFiles.length > 0, "dry-run bundle is missing");
 invariant(
-  distFiles.every(
-    (path) => ![".pbf", ".osm", ".pdf", ".env"].includes(extname(path)),
-  ),
+  distFiles.every((path) => !hasForbiddenShippedExtension(path)),
   "raw data or secrets found in bundle",
 );
 const shippedFiles = distFiles.filter((path) => extname(path) === ".js");
@@ -149,14 +259,31 @@ const evidence = {
     files: shippedFiles.map((path) => relative(rootPath, path)),
     unpackedBytes,
     gzipBytes,
-    bindings: [],
+    bindings: ["ASSETS"],
+  },
+  roadGraph: {
+    version: roadGraphManifest.graphVersion,
+    osmAsOf: roadGraphManifest.osmAsOf,
+    assetPath: roadGraphManifest.assetPath,
+    assetSha256: roadGraphManifest.assetSha256,
+    sizeBytes: roadGraphManifest.sizeBytes,
+    nodeCount: roadGraphManifest.nodeCount,
+    edgeCount: roadGraphManifest.edgeCount,
+    snappedCommuneCount: roadGraphManifest.snappedCommuneCount,
+    unroutableCommuneCount: roadGraphManifest.unroutableCommuneCount,
+    estimatedDecodedBytes: estimatedDecodedGraphBytes,
   },
   checks: [
     "dataset-validated",
     "3321-unique-commune-ids",
     "coordinates-valid",
     "osm-odbl-provenance",
-    "no-worker-bindings",
+    "static-assets-binding-allowlisted",
+    "road-graph-dataset-version-match",
+    "road-graph-content-addressed",
+    "road-graph-connector-id-set",
+    "road-graph-size-policy",
+    "road-graph-odbl-provenance",
     "bundle-size-policy",
     "no-raw-geometry-in-shipped-worker",
   ],

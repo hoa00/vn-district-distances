@@ -14,3 +14,10 @@ export class CommuneNotFoundError extends Error {
     this.communeIds = Object.freeze([...communeIds]);
   }
 }
+
+export class RoadGraphUnavailableError extends Error {
+  constructor() {
+    super("The static road graph is unavailable.");
+    this.name = "RoadGraphUnavailableError";
+  }
+}

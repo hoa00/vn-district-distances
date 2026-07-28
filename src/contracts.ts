@@ -8,6 +8,7 @@ export const ERROR_CODES = [
   "INVALID_REQUEST",
   "COMMUNE_NOT_FOUND",
   "DATASET_UNAVAILABLE",
+  "ROAD_GRAPH_UNAVAILABLE",
   "INTERNAL_ERROR",
 ] as const;
 
@@ -88,6 +89,84 @@ export interface DistanceResponse {
   readonly unit: "km";
   readonly datasetVersion: string;
 }
+
+export const ROAD_ROUTE_WARNINGS = [
+  "coarse-road-network",
+  "long-road-snap",
+  "uses-ferry",
+  "no-road-connector",
+  "disconnected-road-graph",
+  "search-budget-fallback",
+] as const;
+
+export type RoadRouteWarning = (typeof ROAD_ROUTE_WARNINGS)[number];
+
+export type RoadRouteCalculationMethod =
+  | "identity"
+  | "coarse-road-graph"
+  | "straight-line-fallback";
+
+export interface RoadRouteResponse {
+  readonly originCommuneId: string;
+  readonly destinationCommuneId: string;
+  readonly distanceKm: number;
+  readonly straightLineDistanceKm: number;
+  readonly unit: "km";
+  readonly approximate: true;
+  readonly calculationMethod: RoadRouteCalculationMethod;
+  readonly datasetVersion: string;
+  readonly roadGraphVersion: string;
+  readonly osmAsOf: string;
+  readonly route: {
+    readonly encoding: "polyline6";
+    readonly geometry: string;
+    readonly pointCount: number;
+  };
+  readonly snaps: {
+    readonly originDistanceKm: number | null;
+    readonly destinationDistanceKm: number | null;
+  };
+  readonly warnings: readonly RoadRouteWarning[];
+}
+
+export interface RoadGraphManifest {
+  readonly schemaVersion: 1;
+  readonly graphVersion: string;
+  readonly communeDatasetVersion: string;
+  readonly communeDatasetSha256: string;
+  readonly osmAsOf: string;
+  readonly osmSourceSha256: string;
+  readonly routingProfileHash: string;
+  readonly assetPath: string;
+  readonly assetSha256: string;
+  readonly sizeBytes: number;
+  readonly nodeCount: number;
+  readonly edgeCount: number;
+  readonly snappedCommuneCount: number;
+  readonly unroutableCommuneCount: number;
+  readonly attribution: string;
+  readonly licenseUrl: string;
+  readonly shareAlikeNotice: string;
+}
+
+export type RoadGraphHealthResponse =
+  | {
+      readonly status: "ready";
+      readonly roadGraph: {
+        readonly loaded: true;
+        readonly version: string;
+        readonly nodeCount: number;
+        readonly edgeCount: number;
+      };
+    }
+  | {
+      readonly status: "degraded";
+      readonly roadGraph: {
+        readonly loaded: false;
+      };
+    };
+
+export type RoadGraphMetadataResponse = RoadGraphManifest;
 
 export interface ErrorResponse {
   readonly error: {

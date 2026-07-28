@@ -28,8 +28,22 @@ describe("OpenAPI contract", () => {
       ).sort(),
     ).toEqual(["200", "400", "404", "500", "503"]);
     expect(document.paths["/health"]?.get?.operationId).toBe("getHealth");
+    expect(document.paths["/api/v1/road-routes"]?.get?.operationId).toBe(
+      "getApproximateRoadRoute",
+    );
+    expect(
+      Object.keys(
+        document.paths["/api/v1/road-routes"]?.get?.responses ?? {},
+      ).sort(),
+    ).toEqual(["200", "400", "404", "500", "503"]);
+    expect(document.paths["/health/road-graph"]?.get?.operationId).toBe(
+      "getRoadGraphHealth",
+    );
     expect(document.paths["/meta/version"]?.get?.operationId).toBe(
       "getDatasetVersion",
+    );
+    expect(document.paths["/meta/road-graph"]?.get?.operationId).toBe(
+      "getRoadGraphMetadata",
     );
   });
 });

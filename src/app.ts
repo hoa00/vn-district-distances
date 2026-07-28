@@ -1,17 +1,42 @@
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { Scalar } from "@scalar/hono-api-reference";
 
-import type { ErrorCode, ErrorResponse } from "./contracts";
+import type {
+  ErrorCode,
+  ErrorResponse,
+  RoadGraphManifest,
+  RoadRouteResponse,
+} from "./contracts";
 import type { RuntimeDatasetInitialization } from "./data/load-runtime-dataset";
-import { CommuneNotFoundError } from "./domain/errors";
+import roadGraphManifestArtifact from "./data/road-graph-manifest.json";
+import type { RoadGraphProvider } from "./data/load-road-graph";
+import {
+  type AssetFetcher,
+  StaticAssetRoadGraphProvider,
+} from "./data/static-road-graph-provider";
+import {
+  CommuneNotFoundError,
+  RoadGraphUnavailableError,
+} from "./domain/errors";
 import {
   distanceQuerySchema,
   distanceResponseSchema,
   errorResponseSchema,
   healthResponseSchema,
+  roadGraphHealthResponseSchema,
+  roadGraphMetadataResponseSchema,
+  roadRouteQuerySchema,
+  roadRouteResponseSchema,
   versionResponseSchema,
 } from "./schemas/api";
 import { DistanceService } from "./services/distance-service";
+import { RouteService } from "./services/route-service";
+
+interface AppEnvironment {
+  Bindings: {
+    readonly ASSETS?: AssetFetcher;
+  };
+}
 
 const jsonContent = <Schema>(schema: Schema, description: string) => ({
   content: { "application/json": { schema } },
@@ -29,6 +54,20 @@ const distanceRoute = createRoute({
     404: jsonContent(errorResponseSchema, "Commune not found"),
     500: jsonContent(errorResponseSchema, "Unexpected error"),
     503: jsonContent(errorResponseSchema, "Dataset unavailable"),
+  },
+});
+
+const roadRoute = createRoute({
+  method: "get",
+  path: "/api/v1/road-routes",
+  operationId: "getApproximateRoadRoute",
+  request: { query: roadRouteQuerySchema },
+  responses: {
+    200: jsonContent(roadRouteResponseSchema, "Approximate static road route"),
+    400: jsonContent(errorResponseSchema, "Invalid request"),
+    404: jsonContent(errorResponseSchema, "Commune not found"),
+    500: jsonContent(errorResponseSchema, "Unexpected error"),
+    503: jsonContent(errorResponseSchema, "Road graph unavailable"),
   },
 });
 
@@ -52,19 +91,47 @@ const versionRoute = createRoute({
   },
 });
 
+const roadGraphHealthRoute = createRoute({
+  method: "get",
+  path: "/health/road-graph",
+  operationId: "getRoadGraphHealth",
+  responses: {
+    200: jsonContent(roadGraphHealthResponseSchema, "Road graph ready"),
+    503: jsonContent(roadGraphHealthResponseSchema, "Road graph degraded"),
+  },
+});
+
+const roadGraphMetadataRoute = createRoute({
+  method: "get",
+  path: "/meta/road-graph",
+  operationId: "getRoadGraphMetadata",
+  responses: {
+    200: jsonContent(roadGraphMetadataResponseSchema, "Road graph metadata"),
+  },
+});
+
 function errorBody(code: ErrorCode, message: string): ErrorResponse {
   return { error: { code, message } };
 }
 
 export interface AppOverrides {
   readonly distanceService?: Pick<DistanceService, "calculate">;
+  readonly roadRouteService?: Pick<RouteService, "calculate">;
+  readonly roadGraphProvider?: RoadGraphProvider;
+  readonly roadGraphManifest?: RoadGraphManifest;
 }
 
 export function createApp(
   initialization: RuntimeDatasetInitialization,
   overrides?: AppOverrides,
 ) {
-  const app = new OpenAPIHono({
+  const activeRoadGraphManifest =
+    overrides?.roadGraphManifest ??
+    (roadGraphManifestArtifact as RoadGraphManifest);
+  let defaultRoadGraphProvider: RoadGraphProvider | undefined;
+  let defaultRoadRouteService: RouteService | undefined;
+
+  const app = new OpenAPIHono<AppEnvironment>({
     defaultHook: (result, c) => {
       if (!result.success) {
         return c.json(
@@ -114,6 +181,98 @@ export function createApp(
             "One or more commune identifiers were not found.",
           ),
           404,
+        );
+      }
+      throw error;
+    }
+  });
+
+  function getRoadGraphProvider(assets: AssetFetcher | undefined) {
+    if (overrides?.roadGraphProvider !== undefined) {
+      return overrides.roadGraphProvider;
+    }
+    if (!initialization.ok) {
+      throw new RoadGraphUnavailableError();
+    }
+    if (assets === undefined) {
+      return new StaticAssetRoadGraphProvider(
+        activeRoadGraphManifest,
+        undefined,
+        {
+          version: initialization.manifest.version,
+          sha256: initialization.manifest.runtimeDatasetSha256,
+        },
+      );
+    }
+    defaultRoadGraphProvider ??= new StaticAssetRoadGraphProvider(
+      activeRoadGraphManifest,
+      assets,
+      {
+        version: initialization.manifest.version,
+        sha256: initialization.manifest.runtimeDatasetSha256,
+      },
+    );
+    return defaultRoadGraphProvider;
+  }
+
+  function getRoadRouteService(assets: AssetFetcher | undefined) {
+    if (overrides?.roadRouteService !== undefined) {
+      return overrides.roadRouteService;
+    }
+    if (!initialization.ok) {
+      throw new RoadGraphUnavailableError();
+    }
+    if (assets === undefined) {
+      return new RouteService(
+        initialization.repository,
+        getRoadGraphProvider(undefined),
+      );
+    }
+
+    defaultRoadRouteService ??= new RouteService(
+      initialization.repository,
+      getRoadGraphProvider(assets),
+    );
+    return defaultRoadRouteService;
+  }
+
+  app.openapi(roadRoute, async (c) => {
+    if (!initialization.ok) {
+      return c.json(
+        errorBody(
+          "DATASET_UNAVAILABLE",
+          "The commune dataset is temporarily unavailable.",
+        ),
+        503,
+      );
+    }
+
+    try {
+      const query = c.req.valid("query");
+      return c.json(
+        await getRoadRouteService(c.env?.ASSETS).calculate(
+          query.originCommuneId,
+          query.destinationCommuneId,
+        ),
+        200,
+      );
+    } catch (error) {
+      if (error instanceof CommuneNotFoundError) {
+        return c.json(
+          errorBody(
+            "COMMUNE_NOT_FOUND",
+            "One or more commune identifiers were not found.",
+          ),
+          404,
+        );
+      }
+      if (error instanceof RoadGraphUnavailableError) {
+        return c.json(
+          errorBody(
+            "ROAD_GRAPH_UNAVAILABLE",
+            "The static road graph is temporarily unavailable.",
+          ),
+          503,
         );
       }
       throw error;
@@ -186,13 +345,43 @@ export function createApp(
     );
   });
 
+  app.openapi(roadGraphHealthRoute, async (c) => {
+    try {
+      const graph = await getRoadGraphProvider(c.env?.ASSETS).get();
+      return c.json(
+        {
+          status: "ready" as const,
+          roadGraph: {
+            loaded: true as const,
+            version: graph.manifest.graphVersion,
+            nodeCount: graph.manifest.nodeCount,
+            edgeCount: graph.manifest.edgeCount,
+          },
+        },
+        200,
+      );
+    } catch {
+      return c.json(
+        {
+          status: "degraded" as const,
+          roadGraph: { loaded: false as const },
+        },
+        503,
+      );
+    }
+  });
+
+  app.openapi(roadGraphMetadataRoute, (c) =>
+    c.json(activeRoadGraphManifest, 200),
+  );
+
   app.doc31("/openapi.json", {
     openapi: "3.1.0",
     info: {
       title: "Vietnam Commune Distance Service",
       version: "0.1.0",
       description:
-        "Centroid-to-centroid distances from the official commune catalog and OpenStreetMap boundaries.",
+        "Centroid distances and approximate static road routes from the official commune catalog and OpenStreetMap data.",
     },
   });
 

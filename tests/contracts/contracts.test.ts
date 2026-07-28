@@ -7,6 +7,7 @@ import {
   type DatasetManifest,
   type DistanceResponse,
   type ErrorResponse,
+  type RoadRouteResponse,
   type RuntimeDataset,
 } from "../../src/contracts";
 
@@ -50,6 +51,7 @@ describe("immutable API decisions", () => {
       "INVALID_REQUEST",
       "COMMUNE_NOT_FOUND",
       "DATASET_UNAVAILABLE",
+      "ROAD_GRAPH_UNAVAILABLE",
       "INTERNAL_ERROR",
     ]);
   });
@@ -109,6 +111,34 @@ describe("JSON contracts", () => {
       unit: "km",
     });
     expect(typeof manifest.recordCount).toBe("number");
+  });
+
+  it("represents an explicitly approximate road route", () => {
+    const response = {
+      originCommuneId: "00004",
+      destinationCommuneId: "00292",
+      distanceKm: 7.25,
+      straightLineDistanceKm: 4.03,
+      unit: "km",
+      approximate: true,
+      calculationMethod: "coarse-road-graph",
+      datasetVersion: "2026.07.28",
+      roadGraphVersion: "2026.07.28-abc123",
+      osmAsOf: "2026-07-27T20:21:20Z",
+      route: {
+        encoding: "polyline6",
+        geometry: "_p~iF~ps|U",
+        pointCount: 2,
+      },
+      snaps: {
+        originDistanceKm: 0.12,
+        destinationDistanceKm: 0.31,
+      },
+      warnings: ["coarse-road-network"],
+    } satisfies RoadRouteResponse;
+
+    expect(response.approximate).toBe(true);
+    expect(response.route.encoding).toBe("polyline6");
   });
 
   it("allows structured unknown error details without any", () => {

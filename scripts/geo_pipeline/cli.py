@@ -4,6 +4,10 @@ import argparse
 import json
 from pathlib import Path
 
+from scripts.geo_pipeline.road_graph import (
+    build_road_graph_artifact,
+    validate_road_graph_artifact,
+)
 from scripts.geo_pipeline.pipeline import (
     archive_raw_asset,
     build_runtime_dataset,
@@ -47,6 +51,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("--dataset", required=True)
+
+    build_road_graph = subparsers.add_parser("build-road-graph")
+    build_road_graph.add_argument("--pbf", required=True)
+    build_road_graph.add_argument("--dataset", required=True)
+    build_road_graph.add_argument("--asset-directory", required=True)
+    build_road_graph.add_argument("--manifest", required=True)
+
+    validate_road_graph = subparsers.add_parser("validate-road-graph")
+    validate_road_graph.add_argument("--manifest", required=True)
+    validate_road_graph.add_argument("--asset-root", required=True)
+    validate_road_graph.add_argument("--dataset")
 
     return parser
 
@@ -123,6 +138,35 @@ def main(argv: list[str] | None = None) -> int:
         dataset = load_runtime_dataset_payload(Path(args.dataset))
         validate_runtime_dataset(dataset)
         print(json.dumps({"ok": True, "recordCount": dataset.manifest.record_count}))
+        return 0
+
+    if args.command == "build-road-graph":
+        manifest = build_road_graph_artifact(
+            pbf_path=Path(args.pbf),
+            dataset_path=Path(args.dataset),
+            asset_directory=Path(args.asset_directory),
+            manifest_path=Path(args.manifest),
+        )
+        print(json.dumps(manifest, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if args.command == "validate-road-graph":
+        header = validate_road_graph_artifact(
+            manifest_path=Path(args.manifest),
+            asset_root=Path(args.asset_root),
+            dataset_path=Path(args.dataset) if args.dataset else None,
+        )
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "nodeCount": header["nodeCount"],
+                    "edgeCount": header["edgeCount"],
+                    "connectorCount": header["connectorCount"],
+                },
+                sort_keys=True,
+            )
+        )
         return 0
 
     raise AssertionError(f"unknown command: {args.command}")

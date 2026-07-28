@@ -6,9 +6,11 @@
   "scripts": {
     "build:dry": "wrangler deploy --dry-run --outdir dist",
     "check": "npm run typecheck && npm test",
+    "data:road-graph:build": "uv run python -m scripts.geo_pipeline.cli build-road-graph --pbf data/raw/sha256/ac41bb5d63592fe2e4348ff82368945fbecdc3a9039ded6e0e338d0827cfa4d1/vietnam-260727.osm.pbf --dataset src/data/runtime-dataset.json --asset-directory public/road-graph --manifest src/data/road-graph-manifest.json",
+    "data:road-graph:validate": "uv run python -m scripts.geo_pipeline.cli validate-road-graph --manifest src/data/road-graph-manifest.json --asset-root public --dataset src/data/runtime-dataset.json",
     "data:validate": "uv run python -m scripts.geo_pipeline.cli validate --dataset src/data/runtime-dataset.json",
     "python:test": "uv run pytest tests/python",
-    "release:verify": "npm run python:test && npm run data:validate && npm run check && npm run build:dry && node scripts/verify-release.mjs",
+    "release:verify": "npm run python:test && npm run data:validate && npm run data:road-graph:validate && npm run check && npm run build:dry && node scripts/verify-release.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

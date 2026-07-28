@@ -1,8 +1,30 @@
 import { describe, expect, it } from "vitest";
 
 import { createApp } from "../../src/app";
+import type { RoadGraphManifest } from "../../src/contracts";
+import type { RoadGraphProvider } from "../../src/data/load-road-graph";
 import { loadRuntimeDataset } from "../../src/data/load-runtime-dataset";
 import { createTestDataset } from "../fixtures/communes";
+
+const ROAD_GRAPH_MANIFEST: RoadGraphManifest = {
+  schemaVersion: 1,
+  graphVersion: "test-road-graph",
+  communeDatasetVersion: "test-2026-07-28",
+  communeDatasetSha256: "a".repeat(64),
+  osmAsOf: "2026-07-27T20:21:20Z",
+  osmSourceSha256: "b".repeat(64),
+  routingProfileHash: "c".repeat(64),
+  assetPath: `/road-graph/${"d".repeat(64)}.bin`,
+  assetSha256: "d".repeat(64),
+  sizeBytes: 1024,
+  nodeCount: 12,
+  edgeCount: 24,
+  snappedCommuneCount: 2,
+  unroutableCommuneCount: 0,
+  attribution: "© OpenStreetMap contributors",
+  licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/",
+  shareAlikeNotice: "ODbL applies.",
+};
 
 describe("operational endpoints", () => {
   it("reports a coherent ready dataset", async () => {
@@ -34,6 +56,54 @@ describe("operational endpoints", () => {
           derivedDatabaseNotice: "Derived database is offered under ODbL.",
         }),
       ]),
+    });
+  });
+
+  it("reports graph readiness and exposes safe graph metadata", async () => {
+    const roadGraphProvider = {
+      manifest: ROAD_GRAPH_MANIFEST,
+      get: async () =>
+        ({ manifest: ROAD_GRAPH_MANIFEST }) as Awaited<
+          ReturnType<RoadGraphProvider["get"]>
+        >,
+    } satisfies RoadGraphProvider;
+    const app = createApp(
+      loadRuntimeDataset(createTestDataset(), { expectedRecordCount: 2 }),
+      {
+        roadGraphManifest: ROAD_GRAPH_MANIFEST,
+        roadGraphProvider,
+      },
+    );
+
+    const health = await app.request("/health/road-graph");
+    const metadata = await app.request("/meta/road-graph");
+
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toEqual({
+      status: "ready",
+      roadGraph: {
+        loaded: true,
+        version: "test-road-graph",
+        nodeCount: 12,
+        edgeCount: 24,
+      },
+    });
+    expect(metadata.status).toBe(200);
+    await expect(metadata.json()).resolves.toEqual(ROAD_GRAPH_MANIFEST);
+  });
+
+  it("reports a degraded graph when no static asset binding is available", async () => {
+    const app = createApp(
+      loadRuntimeDataset(createTestDataset(), { expectedRecordCount: 2 }),
+      { roadGraphManifest: ROAD_GRAPH_MANIFEST },
+    );
+
+    const response = await app.request("/health/road-graph");
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      status: "degraded",
+      roadGraph: { loaded: false },
     });
   });
 
