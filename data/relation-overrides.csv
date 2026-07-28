@@ -1,0 +1,2 @@
+catalogId,relationId,name,provinceId,reason
+20333,17296617,Đặc khu Hoàng Sa,48,"NSO lists the unit; OSM models the available geometry as a disputed boundary rather than admin_level=6."

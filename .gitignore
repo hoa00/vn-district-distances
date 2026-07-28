@@ -1,0 +1,14 @@
+.DS_Store
+node_modules/
+.wrangler/
+dist/
+.venv/
+__pycache__/
+.pytest_cache/
+.env*
+.dev.vars*
+data/raw/*
+!data/raw/README.md
+data/staging/
+data/releases/
+data/generated/

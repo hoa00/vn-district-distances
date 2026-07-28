@@ -1,0 +1,67 @@
+schemaVersion: 1
+sources:
+  - role: commune-catalog
+    sourceUrl: https://danhmuchanhchinh.nso.gov.vn/Default.aspx
+    checksumUrl: ""
+    checksumMd5: ""
+    archiveName: nso-communes-20260728.catalog.csv
+    effectiveAt: "2026-07-28T00:00:00Z"
+    retrievedAt: "2026-07-28T07:30:00Z"
+    sha256: "bc4c9263d52e955b0ba112340d770d6edc70e1c04ac910c0bb9fc06b9a968bda"
+    attribution: "National Statistics Office of Vietnam"
+    licenseUrl: "https://www.nso.gov.vn/"
+    shareAlikeNotice: "Official administrative codes and names are factual public-sector reference data; retain NSO attribution."
+    derivedDatabaseNotice: "Normalized CSV snapshot extracted from all five pages of the official NSO commune-level grid (3,321 unique codes) on the retrieval date."
+    byteLimit: 1048576
+  - role: province-catalog
+    sourceUrl: https://danhmuchanhchinh.nso.gov.vn/Default.aspx
+    checksumUrl: https://danhmuchanhchinh.nso.gov.vn/Default.aspx
+    checksumMd5: ""
+    archiveName: vn-province-catalog.html
+    effectiveAt: "2025-07-01T00:00:00Z"
+    retrievedAt: "2026-07-28T00:00:00Z"
+    sha256: "601ce32e789ca8df5bbb5f07c703b458f5beec06c41956cf9af1dc24e777818c"
+    attribution: "National Statistics Office of Vietnam"
+    licenseUrl: "https://www.nso.gov.vn/"
+    shareAlikeNotice: "Official catalog data reused under source terms; verify downstream redistribution rights separately."
+    derivedDatabaseNotice: "Province validation uses the official NSO reconciliation endpoint."
+    byteLimit: 1048576
+  - role: geometry
+    sourceUrl: https://download.geofabrik.de/asia/vietnam-260727.osm.pbf
+    checksumUrl: https://download.geofabrik.de/asia/vietnam-260727.osm.pbf.md5
+    checksumMd5: "0c4397b566463e07f6f50a8e885a82ae"
+    archiveName: vietnam-260727.osm.pbf
+    effectiveAt: "2026-07-27T20:21:20Z"
+    retrievedAt: "2026-07-28T06:24:00Z"
+    sha256: "ac41bb5d63592fe2e4348ff82368945fbecdc3a9039ded6e0e338d0827cfa4d1"
+    attribution: "OpenStreetMap contributors"
+    licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/"
+    shareAlikeNotice: "ODbL 1.0 applies; redistributed derivative databases must remain under ODbL."
+    derivedDatabaseNotice: "Public Geofabrik extracts omit personal metadata and are licensed under ODbL 1.0 for derivative-database use."
+    byteLimit: 419430400
+  - role: geometry
+    sourceUrl: https://api.openstreetmap.org/api/0.6/relation/17296617/full
+    checksumUrl: ""
+    checksumMd5: ""
+    archiveName: osm-islands-supplement.osm.pbf
+    effectiveAt: "2026-04-21T23:42:30Z"
+    retrievedAt: "2026-07-28T09:12:00Z"
+    sha256: "cedaff3bcfa6051d8623c1bc64d7fb992510a6c063b23afb34d6fa66c3446cc0"
+    attribution: "OpenStreetMap contributors"
+    licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/"
+    shareAlikeNotice: "ODbL 1.0 applies; redistributed derivative databases must remain under ODbL."
+    derivedDatabaseNotice: "Full OSM relation response supplements Hoàng Sa geometry omitted from the clipped Geofabrik Vietnam extract; relation 17296617 is explicitly reviewed as disputed-boundary geometry."
+    byteLimit: 1048576
+  - role: geometry
+    sourceUrl: https://api.openstreetmap.org/api/0.6/relation/3479413/full
+    checksumUrl: ""
+    checksumMd5: ""
+    archiveName: osm-islands-supplement.osm.pbf
+    effectiveAt: "2026-04-21T23:42:30Z"
+    retrievedAt: "2026-07-28T09:12:00Z"
+    sha256: "cedaff3bcfa6051d8623c1bc64d7fb992510a6c063b23afb34d6fa66c3446cc0"
+    attribution: "OpenStreetMap contributors"
+    licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/"
+    shareAlikeNotice: "ODbL 1.0 applies; redistributed derivative databases must remain under ODbL."
+    derivedDatabaseNotice: "Full OSM relation response supplements Trường Sa geometry omitted from the clipped Geofabrik Vietnam extract; both full responses are merged into the same content-addressed supplement."
+    byteLimit: 1048576

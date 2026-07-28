@@ -1,0 +1,8 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vn-commune-distance-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-28",
+  "upload_source_maps": false,
+  "workers_dev": true
+}

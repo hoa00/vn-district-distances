@@ -1,0 +1,128 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  DISTANCE_LOOKUP_TRUTH_TABLE,
+  ERROR_CODES,
+  isCommuneId,
+  type DatasetManifest,
+  type DistanceResponse,
+  type ErrorResponse,
+  type RuntimeDataset,
+} from "../../src/contracts";
+
+describe("isCommuneId", () => {
+  it.each([
+    ["00004", true],
+    ["01234", true],
+    ["12345", true],
+    ["4", false],
+    ["123456", false],
+    ["12A45", false],
+    ["", false],
+  ])("validates %j as %s", (value, expected) => {
+    expect(isCommuneId(value)).toBe(expected);
+  });
+});
+
+describe("immutable API decisions", () => {
+  it("locks every distance lookup outcome", () => {
+    expect(DISTANCE_LOOKUP_TRUTH_TABLE).toEqual([
+      { scenario: "malformed", status: 400, errorCode: "INVALID_REQUEST" },
+      { scenario: "known-same", status: 200, distanceKm: 0 },
+      { scenario: "unknown-same", status: 404, errorCode: "COMMUNE_NOT_FOUND" },
+      { scenario: "origin-missing", status: 404, errorCode: "COMMUNE_NOT_FOUND" },
+      {
+        scenario: "destination-missing",
+        status: 404,
+        errorCode: "COMMUNE_NOT_FOUND",
+      },
+      { scenario: "both-missing", status: 404, errorCode: "COMMUNE_NOT_FOUND" },
+      {
+        scenario: "dataset-unavailable",
+        status: 503,
+        errorCode: "DATASET_UNAVAILABLE",
+      },
+    ]);
+  });
+
+  it("locks the public error codes", () => {
+    expect(ERROR_CODES).toEqual([
+      "INVALID_REQUEST",
+      "COMMUNE_NOT_FOUND",
+      "DATASET_UNAVAILABLE",
+      "INTERNAL_ERROR",
+    ]);
+  });
+});
+
+describe("JSON contracts", () => {
+  it("preserves five-digit IDs and manifest provenance", () => {
+    const manifest = {
+      schemaVersion: 1,
+      version: "2026-07-28",
+      asOf: "2026-07-27",
+      generatedAt: "2026-07-28T00:00:00Z",
+      recordCount: 1,
+      inputs: [
+        {
+          role: "geometry",
+          sourceUrl: "https://download.geofabrik.de/asia/vietnam-260727.osm.pbf",
+          archivePath:
+            "data/raw/sha256/abc/vietnam-260727.osm.pbf",
+          effectiveAt: "2026-07-27",
+          retrievedAt: "2026-07-28T00:00:00Z",
+          sha256: "abc",
+          attribution: "© OpenStreetMap contributors",
+          licenseUrl: "https://www.openstreetmap.org/copyright",
+          shareAlikeNotice: "ODbL share-alike applies.",
+          derivedDatabaseNotice: "Derived database is offered under ODbL.",
+        },
+      ],
+      runtimeDatasetSha256: "def",
+    } satisfies DatasetManifest;
+
+    const dataset = {
+      manifest,
+      records: [
+        {
+          id: "00004",
+          name: "Phường Ba Đình",
+          type: "phuong",
+          provinceId: "01",
+          latitude: 21.034,
+          longitude: 105.814,
+          centroidOutsideGeometry: false,
+        },
+      ],
+    } satisfies RuntimeDataset;
+
+    const response = {
+      originCommuneId: dataset.records[0]!.id,
+      destinationCommuneId: "00292",
+      distanceKm: 12.34,
+      unit: "km",
+      datasetVersion: manifest.version,
+    } satisfies DistanceResponse;
+
+    expect(JSON.parse(JSON.stringify(response))).toMatchObject({
+      originCommuneId: "00004",
+      unit: "km",
+    });
+    expect(typeof manifest.recordCount).toBe("number");
+  });
+
+  it("allows structured unknown error details without any", () => {
+    const response = {
+      error: {
+        code: "INVALID_REQUEST",
+        message: "Invalid commune identifier.",
+        details: { field: "originCommuneId", received: null },
+      },
+    } satisfies ErrorResponse;
+
+    expect(response.error.details).toEqual({
+      field: "originCommuneId",
+      received: null,
+    });
+  });
+});

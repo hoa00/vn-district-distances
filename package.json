@@ -1,0 +1,33 @@
+{
+  "name": "vn-commune-distance-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:dry": "wrangler deploy --dry-run --outdir dist",
+    "check": "npm run typecheck && npm test",
+    "data:validate": "uv run python -m scripts.geo_pipeline.cli validate --dataset src/data/runtime-dataset.json",
+    "python:test": "uv run pytest tests/python",
+    "release:verify": "npm run python:test && npm run data:validate && npm run check && npm run build:dry && node scripts/verify-release.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "1.5.1",
+    "@scalar/hono-api-reference": "0.11.11",
+    "hono": "4.12.32",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.18.8",
+    "@types/node": "22.18.6",
+    "typescript": "5.8.3",
+    "vitest": "4.1.10",
+    "wrangler": "4.114.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
