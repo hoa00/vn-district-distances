@@ -124,7 +124,53 @@ describe("production Worker entry", () => {
     });
   });
 
-  it("keeps the representative route corpus small and warm routing fast", async () => {
+  it("serves a real coordinate route from the v2 spatial index", async () => {
+    const response = await SELF.fetch(
+      "https://example.test/api/v1/road-routes/points?originLat=21.028511&originLng=105.804817&destinationLat=20.995138&destinationLng=105.866216",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const route = (await response.json()) as {
+      calculationMethod: string;
+      distanceKm: number;
+      originPoint: { latitude: number; longitude: number };
+      destinationPoint: { latitude: number; longitude: number };
+      route: { encoding: string; geometry: string; pointCount: number };
+    };
+    expect(route.calculationMethod).toBe("coarse-road-graph");
+    expect(route.distanceKm).toBeGreaterThan(0);
+    expect(route.originPoint).toEqual({
+      latitude: 21.028511,
+      longitude: 105.804817,
+    });
+    expect(route.route.encoding).toBe("polyline6");
+    expect(route.route.pointCount).toBeGreaterThan(1);
+    // Response payload phải nằm trong ngân sách 100 KiB.
+    expect(route.route.geometry.length).toBeLessThanOrEqual(100 * 1024);
+  });
+
+  it("serves a coordinate identity and rejects out-of-coverage points", async () => {
+    const identity = await SELF.fetch(
+      "https://example.test/api/v1/road-routes/points?originLat=21.028511&originLng=105.804817&destinationLat=21.028511&destinationLng=105.804817",
+    );
+    expect(identity.status).toBe(200);
+    await expect(identity.json()).resolves.toMatchObject({
+      calculationMethod: "identity",
+      distanceKm: 0,
+      route: { pointCount: 1 },
+    });
+
+    // Điểm rõ ràng ngoài bbox Vietnam → 422, không trả road distance sai nghĩa.
+    const outside = await SELF.fetch(
+      "https://example.test/api/v1/road-routes/points?originLat=1&originLng=1&destinationLat=1.001&destinationLng=1.001",
+    );
+    expect(outside.status).toBe(422);
+    await expect(outside.json()).resolves.toMatchObject({
+      error: { code: "OUTSIDE_ROAD_GRAPH_COVERAGE" },
+    });
+  });
+
+  it("serves a representative route corpus within the response budget", async () => {
     const pairs = [
       ["00004", "00008"],
       ["00985", "04429"],
@@ -139,21 +185,7 @@ describe("production Worker entry", () => {
       expect(response.status).toBe(200);
       expect((await response.text()).length).toBeLessThanOrEqual(100 * 1024);
     }
-
-    const timings: number[] = [];
-    for (let sample = 0; sample < 25; sample += 1) {
-      const started = performance.now();
-      const response = await SELF.fetch(
-        "https://example.test/api/v1/road-routes?originCommuneId=00004&destinationCommuneId=00008",
-      );
-      expect(response.status).toBe(200);
-      await response.arrayBuffer();
-      timings.push(performance.now() - started);
-    }
-    timings.sort((left, right) => left - right);
-    const percentile = (ratio: number) =>
-      timings[Math.ceil(timings.length * ratio) - 1]!;
-    expect(percentile(0.95)).toBeLessThanOrEqual(6);
-    expect(percentile(0.99)).toBeLessThan(9);
+    // Hiệu năng warm routing (CPU thuần) được đo riêng qua `npm run test:perf`
+    // (benchmark gọi RouteService trực tiếp, ổn định hơn timing qua miniflare).
   });
 });

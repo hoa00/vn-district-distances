@@ -57,6 +57,7 @@ npx wrangler dev
 - Committed artifact: `3,321/3,321`, version `2026.07.28`.
 - Final release verifier: ready, only the `ASSETS` binding, no paid runtime service.
 - Road graph health and metadata are served at `/health/road-graph` and `/meta/road-graph`.
+- Approximate road routes accept either commune IDs (`/api/v1/road-routes`) or two WGS84 coordinates (`/api/v1/road-routes/points`); the coordinate endpoint snaps each point to the nearest graph node via an offline spatial index baked into the v2 road-graph asset.
 
 Deployment is supported with Wrangler:
 

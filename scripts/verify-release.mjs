@@ -139,13 +139,30 @@ const roadGraphManifest = JSON.parse(
   await readFile(fromRoot("src/data/road-graph-manifest.json"), "utf8"),
 );
 invariant(
-  roadGraphManifest.schemaVersion === 1,
+  roadGraphManifest.schemaVersion === 2,
   "unsupported road graph schema",
 );
 invariant(
   roadGraphManifest.communeDatasetVersion === manifest.version &&
     roadGraphManifest.communeDatasetSha256 === manifest.runtimeDatasetSha256,
   "road graph and commune dataset versions do not match",
+);
+invariant(
+  roadGraphManifest.spatialCellSizeDegrees === 0.05 &&
+    roadGraphManifest.snapMaximumMeters === 10_000 &&
+    roadGraphManifest.spatialIndexNodeCount === roadGraphManifest.nodeCount &&
+    Number.isInteger(roadGraphManifest.spatialCellCount) &&
+    roadGraphManifest.spatialCellCount > 0,
+  "road graph spatial index manifest fields are invalid",
+);
+invariant(
+  roadGraphManifest.minimumLatitude <= roadGraphManifest.maximumLatitude &&
+    roadGraphManifest.minimumLongitude <= roadGraphManifest.maximumLongitude &&
+    roadGraphManifest.minimumLatitude >= -90 &&
+    roadGraphManifest.maximumLatitude <= 90 &&
+    roadGraphManifest.minimumLongitude >= -180 &&
+    roadGraphManifest.maximumLongitude <= 180,
+  "road graph bounds are invalid",
 );
 invariant(
   roadGraphManifest.attribution.includes("OpenStreetMap"),
@@ -183,6 +200,39 @@ invariant(
   roadGraphAsset.subarray(0, 4).toString("ascii") === "VNRG",
   "road graph binary magic is invalid",
 );
+invariant(
+  roadGraphAsset.readUInt16LE(4) === 2,
+  "road graph binary schema is not v2",
+);
+invariant(
+  roadGraphAsset.readUInt16LE(6) === 16,
+  "road graph binary must declare 16 sections",
+);
+invariant(
+  roadGraphAsset.readUInt32LE(8) === 288,
+  "road graph binary data offset must be 288",
+);
+// Spatial node-index section (id 16) phải là permutation [0, nodeCount).
+const spatialNodeDirectoryOffset = 32 + (16 - 1) * 16;
+const spatialNodeSectionOffset = roadGraphAsset.readUInt32LE(
+  spatialNodeDirectoryOffset + 4,
+);
+const spatialNodeElementCount = roadGraphAsset.readUInt32LE(
+  spatialNodeDirectoryOffset + 12,
+);
+invariant(
+  spatialNodeElementCount === roadGraphManifest.nodeCount,
+  "spatial node index count does not match node count",
+);
+const spatialSeen = new Uint8Array(roadGraphManifest.nodeCount);
+for (let index = 0; index < spatialNodeElementCount; index += 1) {
+  const node = roadGraphAsset.readUInt32LE(spatialNodeSectionOffset + index * 4);
+  invariant(
+    node < roadGraphManifest.nodeCount && spatialSeen[node] === 0,
+    "spatial node index is not a permutation",
+  );
+  spatialSeen[node] = 1;
+}
 const connectorDirectoryOffset = 32 + (9 - 1) * 16;
 const connectorSectionOffset = roadGraphAsset.readUInt32LE(
   connectorDirectoryOffset + 4,
@@ -271,6 +321,15 @@ const evidence = {
     edgeCount: roadGraphManifest.edgeCount,
     snappedCommuneCount: roadGraphManifest.snappedCommuneCount,
     unroutableCommuneCount: roadGraphManifest.unroutableCommuneCount,
+    spatialCellCount: roadGraphManifest.spatialCellCount,
+    spatialCellSizeDegrees: roadGraphManifest.spatialCellSizeDegrees,
+    snapMaximumMeters: roadGraphManifest.snapMaximumMeters,
+    bounds: {
+      minimumLatitude: roadGraphManifest.minimumLatitude,
+      maximumLatitude: roadGraphManifest.maximumLatitude,
+      minimumLongitude: roadGraphManifest.minimumLongitude,
+      maximumLongitude: roadGraphManifest.maximumLongitude,
+    },
     estimatedDecodedBytes: estimatedDecodedGraphBytes,
   },
   checks: [
@@ -282,6 +341,8 @@ const evidence = {
     "road-graph-dataset-version-match",
     "road-graph-content-addressed",
     "road-graph-connector-id-set",
+    "road-graph-v2-abi",
+    "road-graph-spatial-index-permutation",
     "road-graph-size-policy",
     "road-graph-odbl-provenance",
     "bundle-size-policy",

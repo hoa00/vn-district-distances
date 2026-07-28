@@ -16,9 +16,12 @@ import {
 } from "./data/static-road-graph-provider";
 import {
   CommuneNotFoundError,
+  OutsideRoadGraphCoverageError,
   RoadGraphUnavailableError,
 } from "./domain/errors";
 import {
+  coordinateRoadRouteQuerySchema,
+  coordinateRoadRouteResponseSchema,
   distanceQuerySchema,
   distanceResponseSchema,
   errorResponseSchema,
@@ -71,6 +74,26 @@ const roadRoute = createRoute({
   },
 });
 
+const coordinateRoute = createRoute({
+  method: "get",
+  path: "/api/v1/road-routes/points",
+  operationId: "getApproximateRoadRouteByPoints",
+  request: { query: coordinateRoadRouteQuerySchema },
+  responses: {
+    200: jsonContent(
+      coordinateRoadRouteResponseSchema,
+      "Approximate static road route by WGS84 coordinates",
+    ),
+    400: jsonContent(errorResponseSchema, "Invalid request"),
+    422: jsonContent(
+      errorResponseSchema,
+      "Point outside road graph coverage",
+    ),
+    500: jsonContent(errorResponseSchema, "Unexpected error"),
+    503: jsonContent(errorResponseSchema, "Road graph unavailable"),
+  },
+});
+
 const healthRoute = createRoute({
   method: "get",
   path: "/health",
@@ -116,7 +139,7 @@ function errorBody(code: ErrorCode, message: string): ErrorResponse {
 
 export interface AppOverrides {
   readonly distanceService?: Pick<DistanceService, "calculate">;
-  readonly roadRouteService?: Pick<RouteService, "calculate">;
+  readonly roadRouteService?: Pick<RouteService, "calculate" | "calculatePoints">;
   readonly roadGraphProvider?: RoadGraphProvider;
   readonly roadGraphManifest?: RoadGraphManifest;
 }
@@ -134,13 +157,11 @@ export function createApp(
   const app = new OpenAPIHono<AppEnvironment>({
     defaultHook: (result, c) => {
       if (!result.success) {
-        return c.json(
-          errorBody(
-            "INVALID_REQUEST",
-            "Both commune identifiers must contain exactly five digits.",
-          ),
-          400,
-        );
+        // Coordinate route dùng thông báo riêng; các route commune/distance giữ thông báo cũ.
+        const message = c.req.path.includes("/road-routes/points")
+          ? "Both origin and destination coordinates must be valid WGS84 points."
+          : "Both commune identifiers must contain exactly five digits.";
+        return c.json(errorBody("INVALID_REQUEST", message), 400);
       }
       return undefined;
     },
@@ -264,6 +285,51 @@ export function createApp(
             "One or more commune identifiers were not found.",
           ),
           404,
+        );
+      }
+      if (error instanceof RoadGraphUnavailableError) {
+        return c.json(
+          errorBody(
+            "ROAD_GRAPH_UNAVAILABLE",
+            "The static road graph is temporarily unavailable.",
+          ),
+          503,
+        );
+      }
+      throw error;
+    }
+  });
+
+  app.openapi(coordinateRoute, async (c) => {
+    if (!initialization.ok) {
+      return c.json(
+        errorBody(
+          "DATASET_UNAVAILABLE",
+          "The commune dataset is temporarily unavailable.",
+        ),
+        503,
+      );
+    }
+
+    try {
+      const query = c.req.valid("query");
+      const result = await getRoadRouteService(c.env?.ASSETS).calculatePoints(
+        query.originLat,
+        query.originLng,
+        query.destinationLat,
+        query.destinationLng,
+      );
+      // Tọa độ là dữ liệu vị trí cá nhân: không cache phía client và không log raw query.
+      c.header("Cache-Control", "private, no-store");
+      return c.json(result, 200);
+    } catch (error) {
+      if (error instanceof OutsideRoadGraphCoverageError) {
+        return c.json(
+          errorBody(
+            "OUTSIDE_ROAD_GRAPH_COVERAGE",
+            "One or both points are outside the road graph coverage area.",
+          ),
+          422,
         );
       }
       if (error instanceof RoadGraphUnavailableError) {

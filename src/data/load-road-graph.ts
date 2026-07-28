@@ -1,11 +1,11 @@
 import type { RoadGraphManifest } from "../contracts";
 
 export const ROAD_GRAPH_MAGIC = "VNRG";
-export const ROAD_GRAPH_SCHEMA_VERSION = 1;
+export const ROAD_GRAPH_SCHEMA_VERSION = 2;
 export const ROAD_GRAPH_HEADER_BYTES = 32;
 export const ROAD_GRAPH_DIRECTORY_ENTRY_BYTES = 16;
-export const ROAD_GRAPH_SECTION_COUNT = 13;
-export const ROAD_GRAPH_DATA_OFFSET = 240;
+export const ROAD_GRAPH_SECTION_COUNT = 16;
+export const ROAD_GRAPH_DATA_OFFSET = 288;
 export const ROAD_GRAPH_FERRY_FLAG = 1;
 export const ROAD_GRAPH_UNROUTABLE_NODE = -1;
 export const ROAD_GRAPH_UNROUTABLE_SNAP_METERS = 0xffff_ffff;
@@ -24,6 +24,9 @@ export const ROAD_GRAPH_SECTION = Object.freeze({
   CONNECTOR_SNAP_M: 11,
   CONNECTOR_GEOMETRY_OFFSETS: 12,
   CONNECTOR_GEOMETRY_DELTAS: 13,
+  SPATIAL_CELL_KEYS: 14,
+  SPATIAL_CELL_OFFSETS: 15,
+  SPATIAL_NODE_INDICES: 16,
 } as const);
 
 type RoadGraphSectionId =
@@ -56,6 +59,9 @@ export interface RoadGraph {
   readonly edgeGeometryOffsets: Readonly<Uint32Array>;
   readonly edgeGeometryDeltas: Readonly<Int32Array>;
   readonly connectorGeometryDeltas: Readonly<Int32Array>;
+  readonly spatialCellKeys: Readonly<Uint32Array>;
+  readonly spatialCellOffsets: Readonly<Uint32Array>;
+  readonly spatialNodeIndices: Readonly<Uint32Array>;
   readonly connectors: ReadonlyMap<string, RoadGraphConnector>;
 }
 
@@ -97,6 +103,9 @@ const EXPECTED_WIDTHS: Readonly<Record<RoadGraphSectionId, 1 | 4>> =
     [ROAD_GRAPH_SECTION.CONNECTOR_SNAP_M]: 4,
     [ROAD_GRAPH_SECTION.CONNECTOR_GEOMETRY_OFFSETS]: 4,
     [ROAD_GRAPH_SECTION.CONNECTOR_GEOMETRY_DELTAS]: 4,
+    [ROAD_GRAPH_SECTION.SPATIAL_CELL_KEYS]: 4,
+    [ROAD_GRAPH_SECTION.SPATIAL_CELL_OFFSETS]: 4,
+    [ROAD_GRAPH_SECTION.SPATIAL_NODE_INDICES]: 4,
   });
 
 function isSha256(value: string): boolean {
@@ -129,6 +138,28 @@ function validateManifest(
     manifest.snappedCommuneCount < 0 ||
     !Number.isSafeInteger(manifest.unroutableCommuneCount) ||
     manifest.unroutableCommuneCount < 0 ||
+    !Number.isFinite(manifest.spatialCellSizeDegrees) ||
+    manifest.spatialCellSizeDegrees <= 0 ||
+    !Number.isSafeInteger(manifest.spatialCellCount) ||
+    manifest.spatialCellCount <= 0 ||
+    !Number.isSafeInteger(manifest.spatialIndexNodeCount) ||
+    manifest.spatialIndexNodeCount !== manifest.nodeCount ||
+    !Number.isSafeInteger(manifest.snapMaximumMeters) ||
+    manifest.snapMaximumMeters <= 0 ||
+    !Number.isFinite(manifest.minimumLatitude) ||
+    manifest.minimumLatitude < -90 ||
+    manifest.minimumLatitude > 90 ||
+    !Number.isFinite(manifest.maximumLatitude) ||
+    manifest.maximumLatitude < -90 ||
+    manifest.maximumLatitude > 90 ||
+    manifest.minimumLatitude > manifest.maximumLatitude ||
+    !Number.isFinite(manifest.minimumLongitude) ||
+    manifest.minimumLongitude < -180 ||
+    manifest.minimumLongitude > 180 ||
+    !Number.isFinite(manifest.maximumLongitude) ||
+    manifest.maximumLongitude < -180 ||
+    manifest.maximumLongitude > 180 ||
+    manifest.minimumLongitude > manifest.maximumLongitude ||
     manifest.attribution.trim().length === 0 ||
     manifest.licenseUrl.trim().length === 0 ||
     manifest.shareAlikeNotice.trim().length === 0
@@ -281,6 +312,44 @@ function validateGeometry(
   }
 }
 
+// Kiểm tra bất biến spatial CSR: cell keys tăng dần nghiêm ngặt, offsets đơn điệu khớp khoảng,
+// node indices tạo permutation [0, nodeCount) (mỗi node đúng một lần).
+function validateSpatialIndex(
+  cellKeys: Readonly<Uint32Array>,
+  cellOffsets: Readonly<Uint32Array>,
+  nodeIndices: Readonly<Uint32Array>,
+  nodeCount: number,
+  cellCount: number,
+): void {
+  if (
+    cellKeys.length !== cellCount ||
+    cellOffsets.length !== cellCount + 1 ||
+    nodeIndices.length !== nodeCount ||
+    cellOffsets[0] !== 0 ||
+    cellOffsets[cellCount] !== nodeCount
+  ) {
+    throw new RoadGraphLoadError();
+  }
+  for (let index = 1; index < cellKeys.length; index += 1) {
+    if (cellKeys[index]! <= cellKeys[index - 1]!) {
+      throw new RoadGraphLoadError();
+    }
+  }
+  for (let index = 1; index < cellOffsets.length; index += 1) {
+    if (cellOffsets[index]! < cellOffsets[index - 1]!) {
+      throw new RoadGraphLoadError();
+    }
+  }
+  const seen = new Uint8Array(nodeCount);
+  for (let index = 0; index < nodeIndices.length; index += 1) {
+    const node = nodeIndices[index]!;
+    if (node >= nodeCount || seen[node] !== 0) {
+      throw new RoadGraphLoadError();
+    }
+    seen[node] = 1;
+  }
+}
+
 function buildGraph(
   manifest: RoadGraphManifest,
   sourceBuffer: ArrayBuffer,
@@ -349,6 +418,18 @@ function buildGraph(
     buffer,
     section(sections, ROAD_GRAPH_SECTION.CONNECTOR_GEOMETRY_DELTAS),
   );
+  const spatialCellKeys = uint32View(
+    buffer,
+    section(sections, ROAD_GRAPH_SECTION.SPATIAL_CELL_KEYS),
+  );
+  const spatialCellOffsets = uint32View(
+    buffer,
+    section(sections, ROAD_GRAPH_SECTION.SPATIAL_CELL_OFFSETS),
+  );
+  const spatialNodeIndices = uint32View(
+    buffer,
+    section(sections, ROAD_GRAPH_SECTION.SPATIAL_NODE_INDICES),
+  );
 
   if (
     nodeLatE6.length !== manifest.nodeCount ||
@@ -380,6 +461,13 @@ function buildGraph(
   if (connectorGeometryOffsets.length !== connectorCount + 1) {
     throw new RoadGraphLoadError();
   }
+  validateSpatialIndex(
+    spatialCellKeys,
+    spatialCellOffsets,
+    spatialNodeIndices,
+    manifest.nodeCount,
+    manifest.spatialCellCount,
+  );
 
   const connectors = new Map<string, RoadGraphConnector>();
   let snappedCount = 0;
@@ -436,6 +524,9 @@ function buildGraph(
     edgeGeometryOffsets,
     edgeGeometryDeltas,
     connectorGeometryDeltas,
+    spatialCellKeys,
+    spatialCellOffsets,
+    spatialNodeIndices,
     connectors,
   });
 }

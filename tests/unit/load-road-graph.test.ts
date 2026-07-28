@@ -7,6 +7,7 @@ import {
   ROAD_GRAPH_DIRECTORY_ENTRY_BYTES,
   ROAD_GRAPH_HEADER_BYTES,
   ROAD_GRAPH_MAGIC,
+  ROAD_GRAPH_SCHEMA_VERSION,
   ROAD_GRAPH_SECTION_COUNT,
 } from "../../src/data/load-road-graph";
 
@@ -54,6 +55,11 @@ const FIXTURE_SECTIONS: readonly FixtureSection[] = [
       -1_000,
     ],
   },
+  // Spatial CSR index: hai node (21.0,105.0) và (21.01,105.01) cùng cell.
+  // key = floor((21+90)*20)*7201 + floor((105+180)*20) = 2220*7201 + 5700 = 15991920.
+  { id: 14, width: 4, values: [15_991_920] },
+  { id: 15, width: 4, values: [0, 2] },
+  { id: 16, width: 4, values: [0, 1] },
 ];
 
 function align8(value: number): number {
@@ -77,7 +83,7 @@ function buildFixtureBuffer(
     bytes[index] = ROAD_GRAPH_MAGIC.charCodeAt(index);
   }
   const view = new DataView(buffer);
-  view.setUint16(4, 1, true);
+  view.setUint16(4, ROAD_GRAPH_SCHEMA_VERSION, true);
   view.setUint16(6, ROAD_GRAPH_SECTION_COUNT, true);
   view.setUint32(8, ROAD_GRAPH_DATA_OFFSET, true);
   view.setUint32(12, 2, true);
@@ -124,7 +130,7 @@ async function sha256(buffer: ArrayBuffer): Promise<string> {
 
 async function manifestFor(buffer: ArrayBuffer): Promise<RoadGraphManifest> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     graphVersion: "test-road-graph",
     communeDatasetVersion: "test-dataset",
     communeDatasetSha256: DATASET_SHA,
@@ -138,6 +144,14 @@ async function manifestFor(buffer: ArrayBuffer): Promise<RoadGraphManifest> {
     edgeCount: 1,
     snappedCommuneCount: 2,
     unroutableCommuneCount: 0,
+    spatialCellSizeDegrees: 0.05,
+    spatialCellCount: 1,
+    spatialIndexNodeCount: 2,
+    snapMaximumMeters: 10_000,
+    minimumLatitude: 21.0,
+    maximumLatitude: 21.01,
+    minimumLongitude: 105.0,
+    maximumLongitude: 105.01,
     attribution: "OpenStreetMap contributors",
     licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/",
     shareAlikeNotice: "ODbL applies.",
@@ -160,6 +174,9 @@ describe("loadRoadGraph", () => {
     }
     expect([...result.graph.nodeLatE6]).toEqual([21_000_000, 21_010_000]);
     expect([...result.graph.csrOffsets]).toEqual([0, 1, 1]);
+    expect([...result.graph.spatialCellKeys]).toEqual([15_991_920]);
+    expect([...result.graph.spatialCellOffsets]).toEqual([0, 2]);
+    expect([...result.graph.spatialNodeIndices]).toEqual([0, 1]);
     expect(result.graph.connectors.get("00004")).toMatchObject({
       node: 0,
       snapMeters: 100,
@@ -265,6 +282,96 @@ describe("loadRoadGraph", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.graph.connectors.get("00292")?.snapMeters).toBeNull();
+    }
+  });
+
+  it("rejects corrupt spatial index terminal offset, out-of-range and duplicate node indices", async () => {
+    const corruptBuffers = [
+      buildFixtureBuffer((view, offsets) => {
+        view.setUint32(offsets.get(15)! + 4, 3, true);
+      }),
+      buildFixtureBuffer((view, offsets) => {
+        view.setUint32(offsets.get(16)! + 4, 5, true);
+      }),
+      buildFixtureBuffer((view, offsets) => {
+        view.setUint32(offsets.get(16)! + 4, 0, true);
+      }),
+    ];
+
+    for (const buffer of corruptBuffers) {
+      const result = await loadRoadGraph({
+        manifest: await manifestFor(buffer),
+        buffer,
+        expectedDatasetVersion: "test-dataset",
+        expectedDatasetSha256: DATASET_SHA,
+      });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("rejects spatial manifest/binary count mismatch", async () => {
+    const buffer = buildFixtureBuffer();
+    const manifest = { ...(await manifestFor(buffer)), spatialCellCount: 2 };
+
+    const result = await loadRoadGraph({
+      manifest,
+      buffer,
+      expectedDatasetVersion: "test-dataset",
+      expectedDatasetSha256: DATASET_SHA,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects unsorted cell keys and non-monotonic offsets in a multi-cell index", async () => {
+    const twoCellFixtures = FIXTURE_SECTIONS.map((fixture) => {
+      if (fixture.id === 1) {
+        return { ...fixture, values: [21_000_000, 22_000_000] };
+      }
+      if (fixture.id === 2) {
+        return { ...fixture, values: [105_000_000, 105_000_000] };
+      }
+      if (fixture.id === 14) {
+        return { ...fixture, values: [15_991_920, 16_135_940] };
+      }
+      if (fixture.id === 15) {
+        return { ...fixture, values: [0, 1, 2] };
+      }
+      if (fixture.id === 16) {
+        return { ...fixture, values: [0, 1] };
+      }
+      return fixture;
+    });
+    const manifest = async (buffer: ArrayBuffer) => ({
+      ...(await manifestFor(buffer)),
+      maximumLatitude: 22.0,
+      spatialCellCount: 2,
+    });
+
+    const valid = buildFixtureBuffer(undefined, twoCellFixtures);
+    const validResult = await loadRoadGraph({
+      manifest: await manifest(valid),
+      buffer: valid,
+      expectedDatasetVersion: "test-dataset",
+      expectedDatasetSha256: DATASET_SHA,
+    });
+    expect(validResult.ok).toBe(true);
+
+    const unsorted = buildFixtureBuffer((view, offsets) => {
+      view.setUint32(offsets.get(14)!, 16_135_940, true);
+      view.setUint32(offsets.get(14)! + 4, 15_991_920, true);
+    }, twoCellFixtures);
+    const nonMonotonic = buildFixtureBuffer((view, offsets) => {
+      view.setUint32(offsets.get(15)! + 4, 3, true);
+    }, twoCellFixtures);
+
+    for (const buffer of [unsorted, nonMonotonic]) {
+      const result = await loadRoadGraph({
+        manifest: await manifest(buffer),
+        buffer,
+        expectedDatasetVersion: "test-dataset",
+        expectedDatasetSha256: DATASET_SHA,
+      });
+      expect(result.ok).toBe(false);
     }
   });
 });

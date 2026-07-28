@@ -40,7 +40,14 @@ function createRouteApp(
 ) {
   return createApp(
     loadRuntimeDataset(createTestDataset(), { expectedRecordCount: 2 }),
-    { roadRouteService: { calculate } },
+    {
+      roadRouteService: {
+        calculate,
+        calculatePoints: async () => {
+          throw new Error("calculatePoints is not exercised by commune route tests");
+        },
+      },
+    },
   );
 }
 

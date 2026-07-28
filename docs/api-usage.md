@@ -6,6 +6,7 @@ The service exposes a small read-only API for distance lookup and operational ch
 
 - `/api/v1/distances`: return centroid-to-centroid distance in kilometers.
 - `/api/v1/road-routes`: return an approximate static road route as Polyline6.
+- `/api/v1/road-routes/points`: return an approximate static road route for two WGS84 coordinates.
 - `/health`: report bundled dataset readiness.
 - `/health/road-graph`: report whether the static road graph can be loaded.
 - `/meta/version`: return version, `asOf`, count, and hashes.
@@ -55,6 +56,48 @@ Warnings:
 - `no-road-connector`
 - `disconnected-road-graph`
 - `search-budget-fallback`
+- `route-output-limit-fallback` — emitted when A* succeeds but the encoded geometry would exceed the response budget, so the service falls back to straight-line distance instead.
+
+## Coordinate Road Route Request
+
+```http
+GET /api/v1/road-routes/points
+  ?originLat=21.028511
+  &originLng=105.804817
+  &destinationLat=20.995138
+  &destinationLng=105.866216
+```
+
+The coordinate endpoint accepts four WGS84 query parameters (latitude in `[-90, 90]`, longitude in `[-180, 180]`). Each point is normalized to six decimals (E6), snapped to the nearest node of the static road graph through an offline grid spatial index, and routed over the **same** A*/geometry/fallback kernel as the commune endpoint.
+
+Key behavior:
+
+- Same identity / `coarse-road-graph` / `straight-line-fallback` methods, same Polyline6 encoding, same `1.3` straight-line fallback factor.
+- The response uses `originPoint`/`destinationPoint` (`{ latitude, longitude }`) instead of commune IDs.
+- A point **clearly outside** the road-graph coverage area (the graph bounding box expanded by the snap radius) returns `422 OUTSIDE_ROAD_GRAPH_COVERAGE` — it does **not** return a meaningless global road distance.
+- A point **inside** coverage but with no road node within the 10 km snap radius returns a transparent `200` straight-line fallback with the `no-road-connector` warning.
+- Invalid (empty, non-finite, out-of-range) coordinates return `400 INVALID_REQUEST`. There is no `404` for coordinate errors.
+- Responses carry `Cache-Control: private, no-store`; raw coordinates are not logged by the application.
+
+```json
+{
+  "originPoint": { "latitude": 21.028511, "longitude": 105.804817 },
+  "destinationPoint": { "latitude": 20.995138, "longitude": 105.866216 },
+  "distanceKm": 8.42,
+  "straightLineDistanceKm": 7.42,
+  "unit": "km",
+  "approximate": true,
+  "calculationMethod": "coarse-road-graph",
+  "datasetVersion": "2026.07.28",
+  "roadGraphVersion": "v2-91ef533ce99a8507",
+  "osmAsOf": "2026-07-27T20:21:20Z",
+  "route": { "encoding": "polyline6", "geometry": "...", "pointCount": 12 },
+  "snaps": { "originDistanceKm": 0.08, "destinationDistanceKm": 0.12 },
+  "warnings": []
+}
+```
+
+Snapping is node-only (MVP): a coordinate snaps to the nearest contracted graph node, not to an exact road segment. Distances are therefore approximate, bounded, and deterministic — not guaranteed shortest paths over the full road network.
 
 ## Response Shape
 

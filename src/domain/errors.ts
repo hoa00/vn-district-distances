@@ -21,3 +21,11 @@ export class RoadGraphUnavailableError extends Error {
     this.name = "RoadGraphUnavailableError";
   }
 }
+
+// Điểm tọa độ rõ ràng ngoài vùng phủ road graph (bbox mở rộng snap max) → handler map 422.
+export class OutsideRoadGraphCoverageError extends Error {
+  constructor() {
+    super("The requested point is outside the road graph coverage area.");
+    this.name = "OutsideRoadGraphCoverageError";
+  }
+}

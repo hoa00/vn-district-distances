@@ -10,6 +10,7 @@ import type {
 } from "../../src/data/load-road-graph";
 import {
   CommuneNotFoundError,
+  OutsideRoadGraphCoverageError,
   RoadGraphUnavailableError,
 } from "../../src/domain/errors";
 import {
@@ -40,8 +41,8 @@ const COMMUNES = [
 ] satisfies readonly CommuneCentroid[];
 
 const MANIFEST: RoadGraphManifest = {
-  schemaVersion: 1,
-  graphVersion: "graph-v1",
+  schemaVersion: 2,
+  graphVersion: "graph-v2",
   communeDatasetVersion: "dataset-v1",
   communeDatasetSha256: "a".repeat(64),
   osmAsOf: "2026-07-27T20:21:20Z",
@@ -54,6 +55,14 @@ const MANIFEST: RoadGraphManifest = {
   edgeCount: 4,
   snappedCommuneCount: 2,
   unroutableCommuneCount: 0,
+  spatialCellSizeDegrees: 0.05,
+  spatialCellCount: 4,
+  spatialIndexNodeCount: 4,
+  snapMaximumMeters: 10_000,
+  minimumLatitude: 10.0,
+  maximumLatitude: 11.0,
+  minimumLongitude: 105.0,
+  maximumLongitude: 106.0,
   attribution: "OpenStreetMap contributors",
   licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/",
   shareAlikeNotice: "ODbL applies.",
@@ -143,6 +152,9 @@ function createGraph(
     edgeGeometryOffsets: edgeGeometry.offsets,
     edgeGeometryDeltas: edgeGeometry.deltas,
     connectorGeometryDeltas: connectorGeometry.deltas,
+    spatialCellKeys: new Uint32Array([12_965_400]),
+    spatialCellOffsets: new Uint32Array([0, 4]),
+    spatialNodeIndices: new Uint32Array([0, 1, 2, 3]),
     connectors: new Map([
       ["00004", connector(0, 0, 100, 0, 2)],
       ["00292", connector(1, 3, 200, 2, 4)],
@@ -204,7 +216,7 @@ describe("RouteService", () => {
     expect(result).toMatchObject({
       distanceKm: 3.9,
       calculationMethod: "coarse-road-graph",
-      roadGraphVersion: "graph-v1",
+      roadGraphVersion: "graph-v2",
       snaps: { originDistanceKm: 0.1, destinationDistanceKm: 0.2 },
       warnings: ["coarse-road-network"],
     });
@@ -340,7 +352,7 @@ describe("RouteService", () => {
     ).calculate("00004", "00292");
 
     expect(result.calculationMethod).toBe("straight-line-fallback");
-    expect(result.warnings).toEqual(["search-budget-fallback"]);
+    expect(result.warnings).toEqual(["route-output-limit-fallback"]);
     expect(result.route.geometry.length).toBeLessThan(96 * 1024);
   });
 
@@ -377,5 +389,84 @@ describe("RouteService", () => {
       [1_000_000, -2_000_000],
       [999_999, -1_999_998],
     ]);
+  });
+});
+
+describe("RouteService.calculatePoints", () => {
+  // Graph test có node ở vĩ độ 0; override bbox để phủ các điểm truy vấn.
+  function pointGraph() {
+    return createGraph({
+      manifest: {
+        ...MANIFEST,
+        minimumLatitude: -1,
+        maximumLatitude: 1,
+        minimumLongitude: -1,
+        maximumLongitude: 1,
+      },
+    });
+  }
+
+  it("short-circuits identity without loading the graph", async () => {
+    const { provider, get } = providerFor(pointGraph());
+    const result = await new RouteService(
+      createRepository(),
+      provider,
+    ).calculatePoints(0, 0, 0, 0);
+
+    expect(result.calculationMethod).toBe("identity");
+    expect(result.distanceKm).toBe(0);
+    expect(result.route.pointCount).toBe(1);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("snaps both points and routes through the shared kernel", async () => {
+    const graph = pointGraph();
+    const result = await new RouteService(
+      createRepository(),
+      providerFor(graph).provider,
+    ).calculatePoints(0, 0, 0, 0.03);
+
+    expect(result.calculationMethod).toBe("coarse-road-graph");
+    expect(result.distanceKm).toBeGreaterThan(0);
+    expect(result.originPoint).toEqual({ latitude: 0, longitude: 0 });
+    expect(result.destinationPoint).toEqual({ latitude: 0, longitude: 0.03 });
+    expect(result.snaps.originDistanceKm).toBe(0);
+    expect(result.snaps.destinationDistanceKm).toBe(0);
+  });
+
+  it("throws outside-coverage for points beyond the expanded bbox", async () => {
+    await expect(
+      new RouteService(
+        createRepository(),
+        providerFor(pointGraph()).provider,
+      ).calculatePoints(50, 50, 50.001, 50.001),
+    ).rejects.toBeInstanceOf(OutsideRoadGraphCoverageError);
+  });
+
+  it("returns a transparent no-connector fallback when a point has no node within snap max", async () => {
+    const result = await new RouteService(
+      createRepository(),
+      providerFor(pointGraph()).provider,
+    ).calculatePoints(0, 0, 0, 0.5);
+
+    expect(result.calculationMethod).toBe("straight-line-fallback");
+    expect(result.warnings).toEqual(["no-road-connector"]);
+  });
+
+  it("surfaces graph unavailability as RoadGraphUnavailableError", async () => {
+    const failingProvider = {
+      manifest: MANIFEST,
+      get: vi.fn(async (): Promise<RoadGraph> => {
+        throw new RoadGraphUnavailableError();
+      }),
+    } satisfies RoadGraphProvider;
+    await expect(
+      new RouteService(createRepository(), failingProvider).calculatePoints(
+        0,
+        0,
+        0,
+        0.03,
+      ),
+    ).rejects.toBeInstanceOf(RoadGraphUnavailableError);
   });
 });

@@ -9,6 +9,7 @@ export const ERROR_CODES = [
   "COMMUNE_NOT_FOUND",
   "DATASET_UNAVAILABLE",
   "ROAD_GRAPH_UNAVAILABLE",
+  "OUTSIDE_ROAD_GRAPH_COVERAGE",
   "INTERNAL_ERROR",
 ] as const;
 
@@ -97,6 +98,7 @@ export const ROAD_ROUTE_WARNINGS = [
   "no-road-connector",
   "disconnected-road-graph",
   "search-budget-fallback",
+  "route-output-limit-fallback",
 ] as const;
 
 export type RoadRouteWarning = (typeof ROAD_ROUTE_WARNINGS)[number];
@@ -129,8 +131,39 @@ export interface RoadRouteResponse {
   readonly warnings: readonly RoadRouteWarning[];
 }
 
+// Điểm WGS84 (độ thập phân) cho coordinate route response.
+export interface RoutePoint {
+  readonly latitude: number;
+  readonly longitude: number;
+}
+
+// Response của coordinate road route: dùng originPoint/destinationPoint thay cho commune ID.
+// Chia sẻ calculationMethod/route/snaps/warnings semantics với RoadRouteResponse.
+export interface CoordinateRoadRouteResponse {
+  readonly originPoint: RoutePoint;
+  readonly destinationPoint: RoutePoint;
+  readonly distanceKm: number;
+  readonly straightLineDistanceKm: number;
+  readonly unit: "km";
+  readonly approximate: true;
+  readonly calculationMethod: RoadRouteCalculationMethod;
+  readonly datasetVersion: string;
+  readonly roadGraphVersion: string;
+  readonly osmAsOf: string;
+  readonly route: {
+    readonly encoding: "polyline6";
+    readonly geometry: string;
+    readonly pointCount: number;
+  };
+  readonly snaps: {
+    readonly originDistanceKm: number | null;
+    readonly destinationDistanceKm: number | null;
+  };
+  readonly warnings: readonly RoadRouteWarning[];
+}
+
 export interface RoadGraphManifest {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly graphVersion: string;
   readonly communeDatasetVersion: string;
   readonly communeDatasetSha256: string;
@@ -144,6 +177,14 @@ export interface RoadGraphManifest {
   readonly edgeCount: number;
   readonly snappedCommuneCount: number;
   readonly unroutableCommuneCount: number;
+  readonly spatialCellSizeDegrees: number;
+  readonly spatialCellCount: number;
+  readonly spatialIndexNodeCount: number;
+  readonly snapMaximumMeters: number;
+  readonly minimumLatitude: number;
+  readonly maximumLatitude: number;
+  readonly minimumLongitude: number;
+  readonly maximumLongitude: number;
   readonly attribution: string;
   readonly licenseUrl: string;
   readonly shareAlikeNotice: string;

@@ -36,6 +36,14 @@ describe("OpenAPI contract", () => {
         document.paths["/api/v1/road-routes"]?.get?.responses ?? {},
       ).sort(),
     ).toEqual(["200", "400", "404", "500", "503"]);
+    expect(
+      document.paths["/api/v1/road-routes/points"]?.get?.operationId,
+    ).toBe("getApproximateRoadRouteByPoints");
+    expect(
+      Object.keys(
+        document.paths["/api/v1/road-routes/points"]?.get?.responses ?? {},
+      ).sort(),
+    ).toEqual(["200", "400", "422", "500", "503"]);
     expect(document.paths["/health/road-graph"]?.get?.operationId).toBe(
       "getRoadGraphHealth",
     );

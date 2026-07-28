@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type CoordinateRoadRouteResponse,
   DISTANCE_LOOKUP_TRUTH_TABLE,
   ERROR_CODES,
   isCommuneId,
+  ROAD_ROUTE_WARNINGS,
   type DatasetManifest,
   type DistanceResponse,
   type ErrorResponse,
@@ -52,7 +54,20 @@ describe("immutable API decisions", () => {
       "COMMUNE_NOT_FOUND",
       "DATASET_UNAVAILABLE",
       "ROAD_GRAPH_UNAVAILABLE",
+      "OUTSIDE_ROAD_GRAPH_COVERAGE",
       "INTERNAL_ERROR",
+    ]);
+  });
+
+  it("locks the road route warning catalog including output-limit fallback", () => {
+    expect(ROAD_ROUTE_WARNINGS).toEqual([
+      "coarse-road-network",
+      "long-road-snap",
+      "uses-ferry",
+      "no-road-connector",
+      "disconnected-road-graph",
+      "search-budget-fallback",
+      "route-output-limit-fallback",
     ]);
   });
 });
@@ -139,6 +154,27 @@ describe("JSON contracts", () => {
 
     expect(response.approximate).toBe(true);
     expect(response.route.encoding).toBe("polyline6");
+  });
+
+  it("represents a coordinate road route with origin/destination points", () => {
+    const response = {
+      originPoint: { latitude: 21.028511, longitude: 105.804817 },
+      destinationPoint: { latitude: 20.995138, longitude: 105.866216 },
+      distanceKm: 8.42,
+      straightLineDistanceKm: 7.42,
+      unit: "km",
+      approximate: true,
+      calculationMethod: "coarse-road-graph",
+      datasetVersion: "2026.07.28",
+      roadGraphVersion: "v2-91ef533ce99a8507",
+      osmAsOf: "2026-07-27T20:21:20Z",
+      route: { encoding: "polyline6", geometry: "_p~iF~ps|U", pointCount: 12 },
+      snaps: { originDistanceKm: 0.08, destinationDistanceKm: 0.12 },
+      warnings: [],
+    } satisfies CoordinateRoadRouteResponse;
+
+    expect(response.originPoint.latitude).toBe(21.028511);
+    expect(response.approximate).toBe(true);
   });
 
   it("allows structured unknown error details without any", () => {

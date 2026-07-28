@@ -7,7 +7,7 @@ import { loadRuntimeDataset } from "../../src/data/load-runtime-dataset";
 import { createTestDataset } from "../fixtures/communes";
 
 const ROAD_GRAPH_MANIFEST: RoadGraphManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   graphVersion: "test-road-graph",
   communeDatasetVersion: "test-2026-07-28",
   communeDatasetSha256: "a".repeat(64),
@@ -21,6 +21,14 @@ const ROAD_GRAPH_MANIFEST: RoadGraphManifest = {
   edgeCount: 24,
   snappedCommuneCount: 2,
   unroutableCommuneCount: 0,
+  spatialCellSizeDegrees: 0.05,
+  spatialCellCount: 12,
+  spatialIndexNodeCount: 12,
+  snapMaximumMeters: 10_000,
+  minimumLatitude: 10.0,
+  maximumLatitude: 11.0,
+  minimumLongitude: 105.0,
+  maximumLongitude: 106.0,
   attribution: "© OpenStreetMap contributors",
   licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/",
   shareAlikeNotice: "ODbL applies.",

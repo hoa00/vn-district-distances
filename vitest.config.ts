@@ -9,5 +9,8 @@ export default defineConfig({
   ],
   test: {
     include: ["tests/**/*.test.ts"],
+    // tests/perf là benchmark thu bằng chứng (nhạy với tải máy), không phải correctness gate;
+    // chạy riêng qua `npm run test:perf` để không flake release:verify.
+    exclude: ["**/node_modules/**", "**/dist/**", "tests/perf/**"],
   },
 });

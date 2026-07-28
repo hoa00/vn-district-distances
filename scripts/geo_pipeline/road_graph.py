@@ -15,13 +15,23 @@ import osmium
 
 
 MAGIC = b"VNRG"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 UNROUTABLE_NODE = 0xFFFFFFFF
 LOW_CONFIDENCE_METERS = 1_000
 MAX_SNAP_METERS = 10_000
 MAX_ASSET_BYTES = 25 * 1024 * 1024
 MAX_DECODED_BYTES = 64 * 1024 * 1024
 SIMPLIFY_TOLERANCE_METERS = 50.0
+
+# Spatial grid dùng cho nearest-node lookup runtime.
+# Cell size 0.05° chia sẻ ý nghĩa với snap_communes; runtime index dùng packed unsigned key.
+# Dùng nhân `* CELLS_PER_DEGREE` (20.0, chính xác trong float) thay vì `/ CELL_SIZE_DEGREES`
+# (1/0.05 = 19.999999999999996) để cell key tại biên ±90/±180 xác định và khớp TypeScript.
+SPATIAL_CELL_SIZE_DEGREES = 0.05
+SPATIAL_CELLS_PER_DEGREE = 20.0
+SPATIAL_LATITUDE_OFFSET = 90.0
+SPATIAL_LONGITUDE_OFFSET = 180.0
+SPATIAL_COLUMNS_PER_ROW = 7201
 
 ROAD_CLASSES = (
     "motorway",
@@ -58,11 +68,14 @@ SECTION_CONNECTOR_NODES = 10
 SECTION_CONNECTOR_SNAP_M = 11
 SECTION_CONNECTOR_GEOMETRY_OFFSETS = 12
 SECTION_CONNECTOR_GEOMETRY_DELTAS = 13
+SECTION_SPATIAL_CELL_KEYS = 14
+SECTION_SPATIAL_CELL_OFFSETS = 15
+SECTION_SPATIAL_NODE_INDICES = 16
 
 HEADER_STRUCT = struct.Struct("<4sHHIIIIII")
 SECTION_STRUCT = struct.Struct("<HBBIII")
-SECTION_COUNT = 13
-HEADER_BYTES = 240
+SECTION_COUNT = 16
+HEADER_BYTES = 288
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +375,44 @@ def _grid_cell(
     cell_degrees: float,
 ) -> tuple[int, int]:
     return math.floor(latitude / cell_degrees), math.floor(longitude / cell_degrees)
+
+
+def spatial_cell_key(latitude: float, longitude: float) -> int:
+    # Packed unsigned cell key cho runtime CSR index; phải khớp XOR formula TypeScript.
+    row = math.floor((latitude + SPATIAL_LATITUDE_OFFSET) * SPATIAL_CELLS_PER_DEGREE)
+    column = math.floor(
+        (longitude + SPATIAL_LONGITUDE_OFFSET) * SPATIAL_CELLS_PER_DEGREE
+    )
+    return row * SPATIAL_COLUMNS_PER_ROW + column
+
+
+def build_spatial_index(
+    nodes: Sequence[RoadNode],
+) -> tuple[list[int], list[int], list[int]]:
+    # CSR spatial index: mỗi node thuộc đúng một cell, sắp xếp node index tăng dần trong bucket,
+    # cell keys tăng dần. Deterministic vì iterate node theo index 0..N-1.
+    buckets: dict[int, list[int]] = defaultdict(list)
+    for node_index, node in enumerate(nodes):
+        buckets[spatial_cell_key(node.latitude, node.longitude)].append(node_index)
+    cell_keys = sorted(buckets)
+    cell_offsets = [0]
+    node_indices: list[int] = []
+    for key in cell_keys:
+        bucket = sorted(buckets[key])
+        node_indices.extend(bucket)
+        cell_offsets.append(len(node_indices))
+    return cell_keys, cell_offsets, node_indices
+
+
+def graph_bounds(nodes: Sequence[RoadNode]) -> tuple[float, float, float, float]:
+    latitudes = [node.latitude for node in nodes]
+    longitudes = [node.longitude for node in nodes]
+    return (
+        min(latitudes),
+        max(latitudes),
+        min(longitudes),
+        max(longitudes),
+    )
 
 
 def contract_graph(
@@ -687,6 +738,8 @@ def routing_profile_payload() -> dict[str, object]:
         "geometry": "polyline6-douglas-peucker-50m",
         "snapLowConfidenceMeters": LOW_CONFIDENCE_METERS,
         "snapMaximumMeters": MAX_SNAP_METERS,
+        "spatialCellSizeDegrees": SPATIAL_CELL_SIZE_DEGREES,
+        "spatialIndex": "csr-grid-nearest-node",
     }
 
 
@@ -700,7 +753,14 @@ def routing_profile_hash() -> str:
     ).hexdigest()
 
 
-def serialize_graph(graph: RoadGraph) -> bytes:
+def serialize_graph(
+    graph: RoadGraph,
+    spatial_index: tuple[list[int], list[int], list[int]] | None = None,
+) -> bytes:
+    if spatial_index is None:
+        spatial_index = build_spatial_index(graph.nodes)
+    cell_keys, cell_offsets, node_indices = spatial_index
+
     ordered_edges = sorted(
         graph.edges,
         key=lambda edge: (edge.source, edge.target, edge.flags, edge.meters),
@@ -803,6 +863,21 @@ def serialize_graph(graph: RoadGraph) -> bytes:
             SECTION_CONNECTOR_GEOMETRY_DELTAS,
             4,
             _pack_values("<i", connector_geometry_deltas),
+        ),
+        (
+            SECTION_SPATIAL_CELL_KEYS,
+            4,
+            _pack_values("<I", cell_keys),
+        ),
+        (
+            SECTION_SPATIAL_CELL_OFFSETS,
+            4,
+            _pack_values("<I", cell_offsets),
+        ),
+        (
+            SECTION_SPATIAL_NODE_INDICES,
+            4,
+            _pack_values("<I", node_indices),
         ),
     ]
     return _serialize_sections(graph, sections)
@@ -977,8 +1052,16 @@ def build_road_graph_artifact(
         file=sys.stderr,
         flush=True,
     )
-    print("road-graph: serializing ABI v1", file=sys.stderr, flush=True)
-    binary = serialize_graph(graph)
+    print("road-graph: serializing ABI v2", file=sys.stderr, flush=True)
+    spatial_index = build_spatial_index(graph.nodes)
+    cell_keys, _cell_offsets, _node_indices = spatial_index
+    (
+        minimum_latitude,
+        maximum_latitude,
+        minimum_longitude,
+        maximum_longitude,
+    ) = graph_bounds(graph.nodes)
+    binary = serialize_graph(graph, spatial_index)
     if len(binary) >= MAX_ASSET_BYTES:
         raise ValueError("road graph asset exceeds 25 MiB")
     decoded_bytes = estimate_decoded_bytes(graph, len(binary))
@@ -996,7 +1079,7 @@ def build_road_graph_artifact(
     )
     manifest: dict[str, object] = {
         "schemaVersion": SCHEMA_VERSION,
-        "graphVersion": f"v1-{asset_sha256[:16]}",
+        "graphVersion": f"v2-{asset_sha256[:16]}",
         "communeDatasetVersion": dataset_manifest["version"],
         "communeDatasetSha256": dataset_manifest["runtimeDatasetSha256"],
         "osmAsOf": osm_input["effectiveAt"],
@@ -1009,6 +1092,14 @@ def build_road_graph_artifact(
         "edgeCount": len(graph.edges),
         "snappedCommuneCount": snapped_count,
         "unroutableCommuneCount": len(graph.connectors) - snapped_count,
+        "spatialCellSizeDegrees": SPATIAL_CELL_SIZE_DEGREES,
+        "spatialCellCount": len(cell_keys),
+        "spatialIndexNodeCount": len(graph.nodes),
+        "snapMaximumMeters": MAX_SNAP_METERS,
+        "minimumLatitude": minimum_latitude,
+        "maximumLatitude": maximum_latitude,
+        "minimumLongitude": minimum_longitude,
+        "maximumLongitude": maximum_longitude,
         "attribution": osm_input["attribution"],
         "licenseUrl": osm_input["licenseUrl"],
         "shareAlikeNotice": osm_input["shareAlikeNotice"],
@@ -1051,6 +1142,14 @@ def validate_road_graph_artifact(
         "edgeCount",
         "snappedCommuneCount",
         "unroutableCommuneCount",
+        "spatialCellSizeDegrees",
+        "spatialCellCount",
+        "spatialIndexNodeCount",
+        "snapMaximumMeters",
+        "minimumLatitude",
+        "maximumLatitude",
+        "minimumLongitude",
+        "maximumLongitude",
         "attribution",
         "licenseUrl",
         "shareAlikeNotice",
@@ -1071,6 +1170,29 @@ def validate_road_graph_artifact(
         != manifest["snappedCommuneCount"] + manifest["unroutableCommuneCount"]
     ):
         raise ValueError("road graph binary and manifest differ")
+    sections = header["sections"]
+    if (
+        manifest["spatialCellSizeDegrees"] != SPATIAL_CELL_SIZE_DEGREES
+        or manifest["snapMaximumMeters"] != MAX_SNAP_METERS
+        or manifest["spatialIndexNodeCount"] != manifest["nodeCount"]
+        or manifest["spatialCellCount"] <= 0
+        or sections[SECTION_SPATIAL_CELL_KEYS]["elementCount"]
+        != manifest["spatialCellCount"]
+        or sections[SECTION_SPATIAL_CELL_OFFSETS]["elementCount"]
+        != manifest["spatialCellCount"] + 1
+        or sections[SECTION_SPATIAL_NODE_INDICES]["elementCount"]
+        != manifest["spatialIndexNodeCount"]
+    ):
+        raise ValueError("road graph spatial index mismatch")
+    if (
+        manifest["minimumLatitude"] > manifest["maximumLatitude"]
+        or manifest["minimumLongitude"] > manifest["maximumLongitude"]
+        or not -90 <= manifest["minimumLatitude"] <= 90
+        or not -90 <= manifest["maximumLatitude"] <= 90
+        or not -180 <= manifest["minimumLongitude"] <= 180
+        or not -180 <= manifest["maximumLongitude"] <= 180
+    ):
+        raise ValueError("road graph bounds are invalid")
     if dataset_path is not None:
         dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
         dataset_manifest = dataset["manifest"]

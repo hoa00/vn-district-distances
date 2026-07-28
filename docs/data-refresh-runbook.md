@@ -18,8 +18,8 @@ This runbook covers a refresh of the committed static dataset artifact and the s
 4. Download the two full OSM island relations from the URLs pinned in `data/sources.yaml`, merge them into one supplement PBF, and review `data/relation-overrides.csv`.
 5. Verify MD5 where supplied, compute SHA-256 for every raw input, archive each file under `data/raw/sha256/<digest>/`, and update `data/sources.yaml`.
 6. Run the offline pipeline with the Geofabrik PBF, island supplement, and override map to produce `src/data/runtime-dataset.json`.
-7. Build the road graph asset and manifest with `npm run data:road-graph:build`.
-8. Verify the road graph with `npm run data:road-graph:validate`.
+7. Build the road graph asset and manifest with `npm run data:road-graph:build`. The build emits VNRG **ABI v2** (16 sections) and embeds the offline spatial index (cell keys + offsets + node indices) plus the graph bounds; the manifest records `spatialCellCount`, `spatialIndexNodeCount`, `snapMaximumMeters`, and the bbox.
+8. Verify the road graph with `npm run data:road-graph:validate` (checks schema v2, the 16-section directory, spatial-index counts/bounds, and the node permutation).
 9. Verify the output count is exactly `3,321/3,321` and run `npm run release:verify`.
 10. Confirm OSM attribution, ODbL URL, share-alike notice, and derived-database notice are exposed by `/meta/version`.
 11. Confirm the road graph health and metadata endpoints are coherent: `/health/road-graph` and `/meta/road-graph`.
@@ -35,10 +35,13 @@ This runbook covers a refresh of the committed static dataset artifact and the s
 - `upload_source_maps` remains disabled.
 - Wrangler reports the expected static asset binding and serves static assets from `./public`.
 - `/api/v1/road-routes` returns Polyline6 geometry and only approximate routes.
+- `/api/v1/road-routes/points` snaps both WGS84 points to the nearest graph node and routes through the same kernel; points outside coverage return `422`, never a meaningless road distance. Coordinate responses carry `Cache-Control: private, no-store` and raw coordinates are not logged.
 - Road-route fallback uses straight-line distance multiplied by `1.3` when a
   connector/path is unavailable or the search budget is exhausted; corrupt or
-  incompatible graph assets return `503`.
+  incompatible graph assets return `503`. A geometry that would exceed the
+  response budget falls back with `route-output-limit-fallback`.
 
 ## Rollback
 
+- ABI v2 is not backward-compatible with v1 code/manifest. Deploy Worker code, manifest, and the content-addressed asset **atomically**; keep exactly one `.bin` in `public/road-graph/` (the verifier enforces this). Roll back to the previous Cloudflare deployment version (old code + manifest + versioned asset) rather than hand-editing the manifest or keeping two binaries in the tree.
 - If the refresh is wrong, revert the artifact commit, restore the previous road graph asset and manifest, and rerun validation from the previous committed snapshot.

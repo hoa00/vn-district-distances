@@ -1,5 +1,6 @@
 import type {
   CommuneCentroid,
+  CoordinateRoadRouteResponse,
   Point,
   RoadGraphManifest,
   RoadRouteResponse,
@@ -13,9 +14,16 @@ import {
 } from "../data/load-road-graph";
 import {
   CommuneNotFoundError,
+  OutsideRoadGraphCoverageError,
   RoadGraphUnavailableError,
 } from "../domain/errors";
-import { haversineKm, roundDistanceKm } from "../domain/geo";
+import { haversineKm, haversineMeters, roundDistanceKm } from "../domain/geo";
+import {
+  type E6Point,
+  normalizeE6,
+  type SnappedNode,
+  snapNearestNode,
+} from "./road-node-snapper";
 
 const MAX_ROUTE_GEOMETRY_CHARACTERS = 96 * 1024;
 
@@ -33,11 +41,6 @@ export interface RouteServiceOptions {
 }
 
 export type RouteServiceResponse = RoadRouteResponse;
-
-interface E6Point {
-  readonly latE6: number;
-  readonly lngE6: number;
-}
 
 type SearchResult =
   | {
@@ -152,14 +155,6 @@ function samePoint(left: E6Point, right: E6Point): boolean {
   return left.latE6 === right.latE6 && left.lngE6 === right.lngE6;
 }
 
-function appendPoints(target: E6Point[], source: readonly E6Point[]): void {
-  for (const point of source) {
-    if (target.length === 0 || !samePoint(target[target.length - 1]!, point)) {
-      target.push(point);
-    }
-  }
-}
-
 function encodeSignedValue(value: number): string {
   let encoded = value < 0 ? ~(value << 1) : value << 1;
   let result = "";
@@ -188,13 +183,6 @@ function centroidPoint(commune: CommuneCentroid): E6Point {
     latE6: Math.round(commune.latitude * 1_000_000),
     lngE6: Math.round(commune.longitude * 1_000_000),
   };
-}
-
-function straightLinePoints(
-  origin: CommuneCentroid,
-  destination: CommuneCentroid,
-): readonly E6Point[] {
-  return [centroidPoint(origin), centroidPoint(destination)];
 }
 
 function decodedConnector(
@@ -226,35 +214,17 @@ function snapDistanceKm(snapMeters: number | null | undefined): number | null {
   return snapMeters == null ? null : roundDistanceKm(snapMeters / 1_000);
 }
 
-function routeGeometry(
-  graph: RoadGraph,
-  originConnector: RoutableRoadGraphConnector,
-  destinationConnector: RoutableRoadGraphConnector,
-  edgePath: readonly number[],
-): E6Point[] {
-  const points: E6Point[] = [];
-  appendPoints(points, decodedConnector(graph, originConnector));
-  for (const edge of edgePath) {
-    appendPoints(points, decodedEdge(graph, edge));
-  }
-  appendPoints(
-    points,
-    decodedConnector(graph, destinationConnector).reverse(),
-  );
-  return points;
-}
-
 function routeWarnings(
   graph: RoadGraph,
-  originConnector: RoutableRoadGraphConnector,
-  destinationConnector: RoutableRoadGraphConnector,
+  originSnapMeters: number,
+  destinationSnapMeters: number,
   edgePath: readonly number[],
   longSnapMeters: number,
 ): RoadRouteWarning[] {
   const warnings: RoadRouteWarning[] = ["coarse-road-network"];
   if (
-    originConnector.snapMeters > longSnapMeters ||
-    destinationConnector.snapMeters > longSnapMeters
+    originSnapMeters > longSnapMeters ||
+    destinationSnapMeters > longSnapMeters
   ) {
     warnings.push("long-road-snap");
   }
@@ -266,6 +236,136 @@ function routeWarnings(
     warnings.push("uses-ferry");
   }
   return warnings;
+}
+
+// Connector đã decode về dạng trung tính cho shared kernel: node + snap + geometry points.
+// Commune connector decode offset geometry; ephemeral connector (coordinate snap) dùng inline points.
+interface ResolvedConnector {
+  readonly node: number;
+  readonly snapMeters: number;
+  readonly geometry: readonly E6Point[];
+}
+
+// Endpoint cho shared kernel: điểm đầu vào E6 + connector đã resolve (undefined nếu no-connector).
+interface ResolvedRouteEndpoint {
+  readonly point: E6Point;
+  readonly connector: ResolvedConnector | undefined;
+}
+
+// Kết quả định tuyến trung tính, chưa bao bọc thành response shape (commune hay point).
+interface RouteOutcome {
+  readonly calculationMethod: "coarse-road-graph" | "straight-line-fallback";
+  readonly distanceMeters: number;
+  readonly straightLineMeters: number;
+  readonly encodedGeometry: string;
+  readonly pointCount: number;
+  readonly originSnapMeters: number | null;
+  readonly destinationSnapMeters: number | null;
+  readonly warnings: readonly RoadRouteWarning[];
+}
+
+function resolvedConnectorFromGraph(
+  graph: RoadGraph,
+  connector: RoutableRoadGraphConnector,
+): ResolvedConnector {
+  return {
+    node: connector.node,
+    snapMeters: connector.snapMeters,
+    geometry: decodedConnector(graph, connector),
+  };
+}
+
+// Ephemeral connector từ coordinate snap: geometry = [input point, snapped node point].
+function ephemeralConnector(graph: RoadGraph, snap: SnappedNode): ResolvedConnector {
+  return {
+    node: snap.node,
+    snapMeters: snap.snapMeters,
+    geometry: [
+      snap.point,
+      {
+        latE6: graph.nodeLatE6[snap.node]!,
+        lngE6: graph.nodeLngE6[snap.node]!,
+      },
+    ],
+  };
+}
+
+function toResolvedEndpoint(
+  graph: RoadGraph,
+  point: E6Point,
+  connector: RoadGraphConnector | undefined,
+): ResolvedRouteEndpoint {
+  return isRoutableConnector(connector)
+    ? { point, connector: resolvedConnectorFromGraph(graph, connector) }
+    : { point, connector: undefined };
+}
+
+function e6ToPoint(point: E6Point): { latitude: number; longitude: number } {
+  return { latitude: point.latE6 / 1_000_000, longitude: point.lngE6 / 1_000_000 };
+}
+
+// Bao bọc RouteOutcome thành CommuneId response (byte-compatible với behavior cũ).
+function communeResponse(
+  originCommuneId: string,
+  destinationCommuneId: string,
+  outcome: RouteOutcome,
+  manifest: Readonly<RoadGraphManifest>,
+  datasetVersion: string,
+): RoadRouteResponse {
+  return {
+    originCommuneId,
+    destinationCommuneId,
+    distanceKm: roundDistanceKm(outcome.distanceMeters / 1_000),
+    straightLineDistanceKm: roundDistanceKm(outcome.straightLineMeters / 1_000),
+    unit: "km",
+    approximate: true,
+    calculationMethod: outcome.calculationMethod,
+    datasetVersion,
+    roadGraphVersion: manifest.graphVersion,
+    osmAsOf: manifest.osmAsOf,
+    route: {
+      encoding: "polyline6",
+      geometry: outcome.encodedGeometry,
+      pointCount: outcome.pointCount,
+    },
+    snaps: {
+      originDistanceKm: snapDistanceKm(outcome.originSnapMeters),
+      destinationDistanceKm: snapDistanceKm(outcome.destinationSnapMeters),
+    },
+    warnings: outcome.warnings,
+  };
+}
+
+// Bao bọc RouteOutcome thành coordinate response (originPoint/destinationPoint).
+function coordinateResponse(
+  originPoint: E6Point,
+  destinationPoint: E6Point,
+  outcome: RouteOutcome,
+  manifest: Readonly<RoadGraphManifest>,
+  datasetVersion: string,
+): CoordinateRoadRouteResponse {
+  return {
+    originPoint: e6ToPoint(originPoint),
+    destinationPoint: e6ToPoint(destinationPoint),
+    distanceKm: roundDistanceKm(outcome.distanceMeters / 1_000),
+    straightLineDistanceKm: roundDistanceKm(outcome.straightLineMeters / 1_000),
+    unit: "km",
+    approximate: true,
+    calculationMethod: outcome.calculationMethod,
+    datasetVersion,
+    roadGraphVersion: manifest.graphVersion,
+    osmAsOf: manifest.osmAsOf,
+    route: {
+      encoding: "polyline6",
+      geometry: outcome.encodedGeometry,
+      pointCount: outcome.pointCount,
+    },
+    snaps: {
+      originDistanceKm: snapDistanceKm(outcome.originSnapMeters),
+      destinationDistanceKm: snapDistanceKm(outcome.destinationSnapMeters),
+    },
+    warnings: outcome.warnings,
+  };
 }
 
 export class RouteService {
@@ -315,7 +415,6 @@ export class RouteService {
     if (origin === undefined) {
       throw new CommuneNotFoundError([originCommuneId]);
     }
-    const manifest = this.#provider.manifest;
     if (originCommuneId === destinationCommuneId) {
       const geometryPoints = [centroidPoint(origin)] as const;
       return {
@@ -327,8 +426,8 @@ export class RouteService {
         approximate: true,
         calculationMethod: "identity",
         datasetVersion: this.#repository.version,
-        roadGraphVersion: manifest.graphVersion,
-        osmAsOf: manifest.osmAsOf,
+        roadGraphVersion: this.#provider.manifest.graphVersion,
+        osmAsOf: this.#provider.manifest.osmAsOf,
         route: {
           encoding: "polyline6",
           geometry: encodePolyline6(geometryPoints),
@@ -343,102 +442,252 @@ export class RouteService {
     if (destination === undefined) {
       throw new CommuneNotFoundError([destinationCommuneId]);
     }
-    const rawStraightLineDistanceKm = haversineKm(
-      { lat: origin.latitude, lng: origin.longitude },
-      { lat: destination.latitude, lng: destination.longitude },
+    const rawStraightLineMeters =
+      haversineKm(
+        { lat: origin.latitude, lng: origin.longitude },
+        { lat: destination.latitude, lng: destination.longitude },
+      ) * 1_000;
+    const graph = await this.#loadGraph();
+    const originEndpoint = toResolvedEndpoint(
+      graph,
+      centroidPoint(origin),
+      graph.connectors.get(originCommuneId),
     );
-    const straightLineDistanceKm = roundDistanceKm(
-      rawStraightLineDistanceKm,
+    const destinationEndpoint = toResolvedEndpoint(
+      graph,
+      centroidPoint(destination),
+      graph.connectors.get(destinationCommuneId),
+    );
+    const outcome = this.#resolveRoute(
+      graph,
+      originEndpoint,
+      destinationEndpoint,
+      rawStraightLineMeters,
+    );
+    return communeResponse(
+      originCommuneId,
+      destinationCommuneId,
+      outcome,
+      graph.manifest,
+      this.#repository.version,
+    );
+  }
+
+  // Coordinate route: chuẩn hóa E6, identity short-circuit (không tải graph), snap hai điểm,
+  // rồi dùng cùng shared kernel. Ngoài coverage → OutsideRoadGraphCoverageError (→ 422).
+  async calculatePoints(
+    originLatitude: number,
+    originLongitude: number,
+    destinationLatitude: number,
+    destinationLongitude: number,
+  ): Promise<CoordinateRoadRouteResponse> {
+    const originPoint = normalizeE6(originLatitude, originLongitude);
+    const destinationPoint = normalizeE6(
+      destinationLatitude,
+      destinationLongitude,
+    );
+    if (samePoint(originPoint, destinationPoint)) {
+      const geometry = encodePolyline6([originPoint]);
+      return {
+        originPoint: e6ToPoint(originPoint),
+        destinationPoint: e6ToPoint(destinationPoint),
+        distanceKm: 0,
+        straightLineDistanceKm: 0,
+        unit: "km",
+        approximate: true,
+        calculationMethod: "identity",
+        datasetVersion: this.#repository.version,
+        roadGraphVersion: this.#provider.manifest.graphVersion,
+        osmAsOf: this.#provider.manifest.osmAsOf,
+        route: { encoding: "polyline6", geometry, pointCount: 1 },
+        snaps: { originDistanceKm: 0, destinationDistanceKm: 0 },
+        warnings: [],
+      };
+    }
+
+    const rawStraightLineMeters = haversineMeters(
+      originPoint.latE6 / 1_000_000,
+      originPoint.lngE6 / 1_000_000,
+      destinationPoint.latE6 / 1_000_000,
+      destinationPoint.lngE6 / 1_000_000,
     );
     const graph = await this.#loadGraph();
-    const originConnector = graph.connectors.get(originCommuneId);
-    const destinationConnector = graph.connectors.get(destinationCommuneId);
-
+    const originSnap = snapNearestNode(graph, originPoint);
+    const destinationSnap = snapNearestNode(graph, destinationPoint);
     if (
-      !isRoutableConnector(originConnector) ||
-      !isRoutableConnector(destinationConnector)
+      originSnap.status === "outside-coverage" ||
+      destinationSnap.status === "outside-coverage"
     ) {
-      return this.#fallback(
-        origin,
-        destination,
-        rawStraightLineDistanceKm,
-        graph.manifest,
-        originConnector,
-        destinationConnector,
+      throw new OutsideRoadGraphCoverageError();
+    }
+    const originEndpoint: ResolvedRouteEndpoint =
+      originSnap.status === "snapped"
+        ? { point: originPoint, connector: ephemeralConnector(graph, originSnap.snap) }
+        : { point: originPoint, connector: undefined };
+    const destinationEndpoint: ResolvedRouteEndpoint =
+      destinationSnap.status === "snapped"
+        ? {
+            point: destinationPoint,
+            connector: ephemeralConnector(graph, destinationSnap.snap),
+          }
+        : { point: destinationPoint, connector: undefined };
+    const outcome = this.#resolveRoute(
+      graph,
+      originEndpoint,
+      destinationEndpoint,
+      rawStraightLineMeters,
+    );
+    return coordinateResponse(
+      originPoint,
+      destinationPoint,
+      outcome,
+      graph.manifest,
+      this.#repository.version,
+    );
+  }
+
+  // Shared route kernel: connector → A* search → geometry/fallback. Trả RouteOutcome trung tính,
+  // dùng chung cho cả CommuneId và coordinate endpoint (không duplicate A*/fallback).
+  #resolveRoute(
+    graph: RoadGraph,
+    origin: ResolvedRouteEndpoint,
+    destination: ResolvedRouteEndpoint,
+    rawStraightLineMeters: number,
+  ): RouteOutcome {
+    if (origin.connector === undefined || destination.connector === undefined) {
+      return this.#fallbackOutcome(
+        origin.point,
+        destination.point,
+        rawStraightLineMeters,
+        origin.connector,
+        destination.connector,
         "no-road-connector",
       );
     }
 
     const search = this.#search(
       graph,
-      originConnector.node,
-      destinationConnector.node,
+      origin.connector.node,
+      destination.connector.node,
     );
     if (search.status !== "found") {
-      return this.#fallback(
-        origin,
-        destination,
-        rawStraightLineDistanceKm,
-        graph.manifest,
-        originConnector,
-        destinationConnector,
+      return this.#fallbackOutcome(
+        origin.point,
+        destination.point,
+        rawStraightLineMeters,
+        origin.connector,
+        destination.connector,
         search.status === "budget-exhausted"
           ? "search-budget-fallback"
           : "disconnected-road-graph",
       );
     }
 
-    const geometryPoints = routeGeometry(
+    const encoded = this.#encodeRoute(
       graph,
-      originConnector,
-      destinationConnector,
+      origin.connector,
+      destination.connector,
       search.edgePath,
     );
-    const encodedGeometry = encodePolyline6(geometryPoints);
-    if (encodedGeometry.length > MAX_ROUTE_GEOMETRY_CHARACTERS) {
-      return this.#fallback(
-        origin,
-        destination,
-        rawStraightLineDistanceKm,
-        graph.manifest,
-        originConnector,
-        destinationConnector,
-        "search-budget-fallback",
+    if (encoded === undefined) {
+      // A* thành công nhưng output quá lớn: fallback minh bạch với warning riêng (không phải search-budget).
+      return this.#fallbackOutcome(
+        origin.point,
+        destination.point,
+        rawStraightLineMeters,
+        origin.connector,
+        destination.connector,
+        "route-output-limit-fallback",
       );
     }
-    const distanceKm = roundDistanceKm(
-      (originConnector.snapMeters +
-        search.distanceMeters +
-        destinationConnector.snapMeters) /
-        1_000,
-    );
+
+    const distanceMeters =
+      origin.connector.snapMeters +
+      search.distanceMeters +
+      destination.connector.snapMeters;
     return {
-      originCommuneId,
-      destinationCommuneId,
-      distanceKm,
-      straightLineDistanceKm,
-      unit: "km",
-      approximate: true,
       calculationMethod: "coarse-road-graph",
-      datasetVersion: this.#repository.version,
-      roadGraphVersion: graph.manifest.graphVersion,
-      osmAsOf: graph.manifest.osmAsOf,
-      route: {
-        encoding: "polyline6",
-        geometry: encodedGeometry,
-        pointCount: geometryPoints.length,
-      },
-      snaps: {
-        originDistanceKm: snapDistanceKm(originConnector.snapMeters),
-        destinationDistanceKm: snapDistanceKm(destinationConnector.snapMeters),
-      },
+      distanceMeters,
+      straightLineMeters: rawStraightLineMeters,
+      encodedGeometry: encoded.geometry,
+      pointCount: encoded.pointCount,
+      originSnapMeters: origin.connector.snapMeters,
+      destinationSnapMeters: destination.connector.snapMeters,
       warnings: routeWarnings(
         graph,
-        originConnector,
-        destinationConnector,
+        origin.connector.snapMeters,
+        destination.connector.snapMeters,
         search.edgePath,
         this.#longSnapMeters,
       ),
+    };
+  }
+
+  // Polyline6 encoding budget-aware: encode tăng dần khi decode geometry, dedup điểm trùng liên tiếp
+  // (giống routeGeometry cũ → byte-compatible) và abort ngay khi vượt cap, trước khi full allocate.
+  #encodeRoute(
+    graph: RoadGraph,
+    origin: ResolvedConnector,
+    destination: ResolvedConnector,
+    edgePath: readonly number[],
+  ): { readonly geometry: string; readonly pointCount: number } | undefined {
+    let previousLatitude = 0;
+    let previousLongitude = 0;
+    let lastEmitted: E6Point | undefined;
+    let pointCount = 0;
+    let result = "";
+
+    const emit = (points: readonly E6Point[]): boolean => {
+      for (const point of points) {
+        if (lastEmitted !== undefined && samePoint(lastEmitted, point)) {
+          continue;
+        }
+        result += encodeSignedValue(point.latE6 - previousLatitude);
+        result += encodeSignedValue(point.lngE6 - previousLongitude);
+        previousLatitude = point.latE6;
+        previousLongitude = point.lngE6;
+        lastEmitted = point;
+        pointCount += 1;
+        if (result.length > MAX_ROUTE_GEOMETRY_CHARACTERS) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    if (!emit(origin.geometry)) {
+      return undefined;
+    }
+    for (const edge of edgePath) {
+      if (!emit(decodedEdge(graph, edge))) {
+        return undefined;
+      }
+    }
+    if (!emit([...destination.geometry].reverse())) {
+      return undefined;
+    }
+    return { geometry: result, pointCount };
+  }
+
+  // Straight-line fallback trung tính: geometry = [originPoint, destinationPoint], distance = thẳng × factor.
+  #fallbackOutcome(
+    originPoint: E6Point,
+    destinationPoint: E6Point,
+    rawStraightLineMeters: number,
+    originConnector: ResolvedConnector | undefined,
+    destinationConnector: ResolvedConnector | undefined,
+    warning: RoadRouteWarning,
+  ): RouteOutcome {
+    const geometryPoints = [originPoint, destinationPoint] as const;
+    return {
+      calculationMethod: "straight-line-fallback",
+      distanceMeters: rawStraightLineMeters * this.#fallbackFactor,
+      straightLineMeters: rawStraightLineMeters,
+      encodedGeometry: encodePolyline6(geometryPoints),
+      pointCount: geometryPoints.length,
+      originSnapMeters: originConnector?.snapMeters ?? null,
+      destinationSnapMeters: destinationConnector?.snapMeters ?? null,
+      warnings: [warning],
     };
   }
 
@@ -551,41 +800,5 @@ export class RouteService {
       }
     }
     return { status: "no-route" };
-  }
-
-  #fallback(
-    origin: CommuneCentroid,
-    destination: CommuneCentroid,
-    rawStraightLineDistanceKm: number,
-    manifest: Readonly<RoadGraphManifest>,
-    originConnector: RoadGraphConnector | undefined,
-    destinationConnector: RoadGraphConnector | undefined,
-    warning: RoadRouteWarning,
-  ): RouteServiceResponse {
-    const geometryPoints = straightLinePoints(origin, destination);
-    return {
-      originCommuneId: origin.id,
-      destinationCommuneId: destination.id,
-      distanceKm: roundDistanceKm(
-        rawStraightLineDistanceKm * this.#fallbackFactor,
-      ),
-      straightLineDistanceKm: roundDistanceKm(rawStraightLineDistanceKm),
-      unit: "km",
-      approximate: true,
-      calculationMethod: "straight-line-fallback",
-      datasetVersion: this.#repository.version,
-      roadGraphVersion: manifest.graphVersion,
-      osmAsOf: manifest.osmAsOf,
-      route: {
-        encoding: "polyline6",
-        geometry: encodePolyline6(geometryPoints),
-        pointCount: geometryPoints.length,
-      },
-      snaps: {
-        originDistanceKm: snapDistanceKm(originConnector?.snapMeters),
-        destinationDistanceKm: snapDistanceKm(destinationConnector?.snapMeters),
-      },
-      warnings: [warning],
-    };
   }
 }

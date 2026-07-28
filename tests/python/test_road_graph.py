@@ -15,14 +15,22 @@ from scripts.geo_pipeline.road_graph import (
     HEADER_STRUCT,
     INTERNAL_EDGE_FLAG_FERRY,
     RoadNode,
+    SCHEMA_VERSION,
     SECTION_COUNT,
     SECTION_EDGE_FLAGS,
+    SECTION_SPATIAL_CELL_KEYS,
+    SECTION_SPATIAL_CELL_OFFSETS,
+    SECTION_SPATIAL_NODE_INDICES,
+    SPATIAL_COLUMNS_PER_ROW,
     UNROUTABLE_NODE,
     build_road_graph,
+    build_spatial_index,
     contract_graph,
+    graph_bounds,
     parse_binary_header,
     serialize_graph,
     simplify_geometry,
+    spatial_cell_key,
     validate_road_graph_artifact,
     way_policy,
 )
@@ -149,11 +157,58 @@ def test_binary_abi_is_exact_and_deterministic() -> None:
 
     assert first == second
     assert HEADER_STRUCT.size == 32
-    assert HEADER_BYTES == 240
-    assert struct.unpack_from("<H", first, 6)[0] == SECTION_COUNT == 13
+    assert HEADER_BYTES == 288
+    assert SCHEMA_VERSION == 2
+    assert struct.unpack_from("<H", first, 4)[0] == SCHEMA_VERSION
+    assert struct.unpack_from("<H", first, 6)[0] == SECTION_COUNT == 16
+    assert struct.unpack_from("<I", first, 8)[0] == HEADER_BYTES
     assert edge_flags == bytes([ABI_EDGE_FLAG_FERRY, ABI_EDGE_FLAG_FERRY])
     assert header["sections"][8]["elementCount"] == 8
     assert header["sections"][13]["elementCount"] == 8
+    # Hai node cùng cell (10.0/10.01, 106.0) → 1 cell, offsets [0,2], nodes [0,1].
+    assert spatial_cell_key(10.0, 106.0) == 2000 * SPATIAL_COLUMNS_PER_ROW + 5720
+    assert header["sections"][SECTION_SPATIAL_CELL_KEYS]["elementCount"] == 1
+    assert header["sections"][SECTION_SPATIAL_CELL_OFFSETS]["elementCount"] == 2
+    assert header["sections"][SECTION_SPATIAL_NODE_INDICES]["elementCount"] == 2
+
+
+def test_spatial_index_is_deterministic_permutation_and_sorted() -> None:
+    nodes = (
+        RoadNode(1, 10.00, 106.00),
+        RoadNode(2, 10.01, 106.01),
+        RoadNode(3, 21.00, 105.00),
+        RoadNode(4, 10.00, 106.00),  # trùng tọa độ node 1 nhưng index khác
+    )
+    cell_keys, cell_offsets, node_indices = build_spatial_index(nodes)
+
+    # Mỗi node đúng một lần; permutation [0, nodeCount).
+    assert len(node_indices) == len(nodes)
+    assert sorted(node_indices) == list(range(len(nodes)))
+    assert cell_offsets[0] == 0
+    assert cell_offsets[-1] == len(nodes)
+    assert cell_offsets == sorted(cell_offsets)
+    # Cell keys tăng dần nghiêm ngặt.
+    assert cell_keys == sorted(set(cell_keys))
+    assert len(cell_keys) + 1 == len(cell_offsets)
+
+    # Hai lần build phải ra bytes giống nhau (deterministic).
+    first = build_spatial_index(nodes)
+    assert first == (cell_keys, cell_offsets, node_indices)
+
+    # Node 1 và node 4 cùng cell → cùng bucket, sắp xếp index tăng dần [0, 3].
+    same_cell = build_spatial_index(nodes)
+    target = spatial_cell_key(10.0, 106.0)
+    assert target in cell_keys
+
+
+def test_graph_bounds_span_contracted_nodes() -> None:
+    nodes = (
+        RoadNode(1, 8.5, 104.0),
+        RoadNode(2, 23.5, 109.5),
+        RoadNode(3, 16.0, 106.0),
+    )
+    bounds = graph_bounds(nodes)
+    assert bounds == (8.5, 23.5, 104.0, 109.5)
 
 
 def test_validation_rejects_corruption_and_dataset_drift(tmp_path: Path) -> None:
@@ -178,8 +233,8 @@ def test_validation_rejects_corruption_and_dataset_drift(tmp_path: Path) -> None
     asset.parent.mkdir()
     asset.write_bytes(payload)
     manifest = {
-        "schemaVersion": 1,
-        "graphVersion": f"v1-{digest[:16]}",
+        "schemaVersion": 2,
+        "graphVersion": f"v2-{digest[:16]}",
         "communeDatasetVersion": "dataset-v1",
         "communeDatasetSha256": "a" * 64,
         "osmAsOf": "2026-07-27T20:21:20Z",
@@ -192,6 +247,14 @@ def test_validation_rejects_corruption_and_dataset_drift(tmp_path: Path) -> None
         "edgeCount": len(graph.edges),
         "snappedCommuneCount": 2,
         "unroutableCommuneCount": 0,
+        "spatialCellSizeDegrees": 0.05,
+        "spatialCellCount": 1,
+        "spatialIndexNodeCount": len(graph.nodes),
+        "snapMaximumMeters": 10_000,
+        "minimumLatitude": 10.0,
+        "maximumLatitude": 10.01,
+        "minimumLongitude": 106.0,
+        "maximumLongitude": 106.0,
         "attribution": "OpenStreetMap contributors",
         "licenseUrl": "https://opendatacommons.org/licenses/odbl/1-0/",
         "shareAlikeNotice": "ODbL applies.",

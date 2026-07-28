@@ -27,8 +27,10 @@ Stack đã được chốt cho MVP service nội bộ tính khoảng cách cấp
 - Catalog dùng nguồn NSO/Quyết định 19; geometry dùng Geofabrik Vietnam OSM PBF đã pin theo timestamp, license ODbL 1.0.
 - Raw input nằm trong local content-addressed SHA-256 archive được Git ignore; không dùng eKMap, R2, API key hoặc dịch vụ trả phí.
 - Static road graph được build thành asset content-addressed, publish qua `./public`, và load qua Cloudflare Workers Assets.
+- Road graph dùng binary ABI v2 (VNRG): ngoài CSR edges/connectors, asset nhúng thêm spatial index dạng CSR grid 0.05° (cell keys + offsets + node indices) để coordinate endpoint snap nearest node O(log) mà không quét tuyến tính hay dựng grid runtime. Mỗi node xuất hiện đúng một lần (permutation), loader validate offline.
+- Coordinate endpoint (`/api/v1/road-routes/points`) snap hai tọa độ WGS84 vào node gần nhất (bán kính snap 10 km) rồi chạy lại cùng A*/geometry/fallback kernel với endpoint CommuneId; điểm ngoài vùng phủ trả `422`, không trả road distance sai nghĩa.
 - Pipeline nhận OSM relation `boundary=administrative`, `admin_level=6`; ngoại lệ duy nhất là Hoàng Sa, dùng OSM relation `17296617` có `boundary=disputed` và được khóa bằng `data/relation-overrides.csv`. Baseline `3.320/3.321` chỉ là chẩn đoán trước khi bổ sung hai full relation snapshot.
-- Road routes là coarse, approximate, và có fallback straight-line với factor `1.3` khi graph không thể dùng.
+- Road routes là coarse, approximate, và có fallback straight-line với factor `1.3` khi graph không thể dùng. Không dùng external routing/Map API trả phí.
 - Data pipeline chạy build-time và cập nhật thủ công.
 
 ## Testing and Tooling

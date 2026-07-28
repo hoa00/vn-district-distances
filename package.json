@@ -12,6 +12,7 @@
     "python:test": "uv run pytest tests/python",
     "release:verify": "npm run python:test && npm run data:validate && npm run data:road-graph:validate && npm run check && npm run build:dry && node scripts/verify-release.mjs",
     "test": "vitest run",
+    "test:perf": "vitest run --config vitest.perf.config.ts tests/perf",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types"
